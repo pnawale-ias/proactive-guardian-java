@@ -1,0 +1,114 @@
+guardian:
+  # ---- OpenAI / Local model ---------------------------------------------
+  # When OPENAI_API_KEY is set to a real value, Spring AI uses OpenAI for
+  # chat + embeddings. When it is unset (or left as the placeholder below),
+  # AiProfileSelector (an EnvironmentPostProcessor) automatically activates
+  # the 'local' profile — see application-local.yml — which switches Spring
+  # AI to a local Ollama instance for both chat and embeddings.
+  #
+  # To use OpenAI:    export OPENAI_API_KEY=sk-...
+  # To use Ollama:    (leave OPENAI_API_KEY unset)   brew install ollama
+  #                                                  ollama serve
+  #                                                  ollama pull llama3.1
+  #                                                  ollama pull nomic-embed-text
+  openai-api-key: ${OPENAI_API_KEY:disabled-set-OPENAI_API_KEY}
+  embedding-model: text-embedding-3-large
+  llm-model: gpt-4o
+
+  # ---- Qdrant ------------------------------------------------------------
+  qdrant-url: ${QDRANT_URL:http://localhost:6333}
+  qdrant-collection: code_and_docs
+  qdrant-api-key: ${QDRANT_API_KEY:}
+
+  # ---- Neo4j -------------------------------------------------------------
+  neo4j-uri: ${NEO4J_URI:bolt://localhost:7687}
+  neo4j-user: ${NEO4J_USER:neo4j}
+  neo4j-pass: ${NEO4J_PASS:guardianpass}
+
+  # ---- GitHub ------------------------------------------------------------
+  github-token: ${GITHUB_TOKEN:}
+  github-webhook-secret: ${GITHUB_WEBHOOK_SECRET:}
+  # Default repo used by POST /ingest/repo when repo_url / repo_name are omitted.
+  # Override at runtime with GITHUB_REPO_URL / GITHUB_REPO_NAME env vars.
+  github-repo-url:  ${GITHUB_REPO_URL:https://github.com/softwarepravin2007}
+  github-repo-name: ${GITHUB_REPO_NAME:generateautocode}
+  # ---- GitHub PR polling (no webhook / no public URL needed) ------------
+  # Set GITHUB_POLL_ENABLED=true to have the app poll api.github.com for
+  # open pull requests on github-repo-url and process them like webhooks.
+  # Uses OUTBOUND HTTPS only — works behind corporate proxies / on laptops
+  # with no inbound reachability. Requires a valid GITHUB_TOKEN for private
+  # repos or to avoid the low unauthenticated rate limit.
+  github-poll-enabled:      ${GITHUB_POLL_ENABLED:false}
+  github-poll-interval-ms:  ${GITHUB_POLL_INTERVAL_MS:60000}
+
+  # ---- Confluence --------------------------------------------------------
+  confluence-base-url: ${CONFLUENCE_BASE_URL:}
+  confluence-user: ${CONFLUENCE_USER:}
+  confluence-token: ${CONFLUENCE_TOKEN:}
+
+  # ---- Databricks (optional) --------------------------------------------
+  databricks-host: ${DATABRICKS_HOST:}
+  databricks-token: ${DATABRICKS_TOKEN:}
+  databricks-default-catalog: ${DATABRICKS_DEFAULT_CATALOG:}
+  default-sql-dialect: ${DEFAULT_SQL_DIALECT:databricks}
+
+  # ---- Analysis knobs ---------------------------------------------------
+  risk-threshold: 0.75
+
+# ---- Spring AI ----------------------------------------------------------
+# Default provider is OpenAI. The 'local' profile (see application-local.yml)
+# overrides spring.ai.model.* to 'ollama'. AiProfileSelector picks 'local'
+# automatically when OPENAI_API_KEY is missing.
+spring:
+  ai:
+    model:
+      chat: ${SPRING_AI_MODEL_CHAT:openai}
+      embedding: ${SPRING_AI_MODEL_EMBEDDING:openai}
+    openai:
+      api-key: ${guardian.openai-api-key}
+      chat:
+        options:
+          model: ${guardian.llm-model}
+          temperature: 0.1
+      embedding:
+        options:
+          model: ${guardian.embedding-model}
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        options:
+          model: ${OLLAMA_CHAT_MODEL:llama3.1}
+          temperature: 0.1
+      embedding:
+        options:
+          model: ${OLLAMA_EMBEDDING_MODEL:nomic-embed-text}
+  # ---- Neo4j (starter) delegates to guardian.* ---------------------------
+  neo4j:
+    uri: ${guardian.neo4j-uri}
+    authentication:
+      username: ${guardian.neo4j-user}
+      password: ${guardian.neo4j-pass}
+  # Disable auto-created Spring Data repositories — we use Neo4jClient directly.
+  data:
+    neo4j:
+      repositories:
+        enabled: false
+
+server:
+  port: 8080
+
+logging:
+  level:
+    root: INFO
+    com.proactiveguardian: DEBUG
+    # Neo4j emits ClientNotification warnings whenever a Cypher query references
+    # a property/label the database has never seen. Neo4jGraphStore pre-registers
+    # the keys we use, but silence the logger anyway to keep cold-start logs clean.
+    org.springframework.data.neo4j.cypher.unrecognized: ERROR
+
+qdrant:
+  host: ${QDRANT_HOST:localhost}
+  port: ${QDRANT_GRPC_PORT:6334}
+  rest-port: ${QDRANT_REST_PORT:6333}
+  use-tls: false
+  api-key: ${QDRANT_API_KEY:}

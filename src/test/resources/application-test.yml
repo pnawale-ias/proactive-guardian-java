@@ -1,0 +1,38 @@
+guardian:
+      - org.springframework.ai.autoconfigure.openai.OpenAiAutoConfiguration
+      - org.springframework.boot.autoconfigure.neo4j.Neo4jAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.neo4j.Neo4jReactiveDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.neo4j.Neo4jDataAutoConfiguration
+    exclude:
+  autoconfigure:
+        enabled: false
+      repositories:
+    neo4j:
+  data:
+      api-key: test
+    openai:
+  ai:
+spring:
+
+    enabled: false
+  dbt:
+    enabled: false
+  confluence:
+    enabled: false
+  github:
+    enabled: false
+  neo4j:
+    enabled: false
+  qdrant:
+  # Turn every external integration off — unit tests inject fakes.
+  confluence-token: test
+  confluence-user: test
+  confluence-base-url: http://localhost
+  neo4j-pass: test
+  neo4j-user: neo4j
+  neo4j-uri: bolt://localhost:7687
+  qdrant-url: http://localhost:6333
+  github-webhook-secret: test-secret
+  github-token: test-github
+  openai-api-key: test-openai
+

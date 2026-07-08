@@ -1,0 +1,28 @@
+# -----------------------------------------------------------------------------
+# 'local' profile — activated automatically by AiProfileSelector when
+# OPENAI_API_KEY is not set. Points Spring AI at a locally-running Ollama
+# server for both chat and embeddings.
+#
+# One-time setup on macOS:
+#   brew install ollama
+#   brew services start ollama          # or: ollama serve
+#   ollama pull llama3.1                # chat model  (~4.7 GB)
+#   ollama pull nomic-embed-text        # embeddings  (~275 MB, 768 dims)
+#
+# Override models via env vars if desired:
+#   OLLAMA_CHAT_MODEL=qwen2.5-coder:7b
+#   OLLAMA_EMBEDDING_MODEL=mxbai-embed-large
+#   OLLAMA_BASE_URL=http://localhost:11434
+# -----------------------------------------------------------------------------
+spring:
+  ai:
+    model:
+      chat: ollama
+      embedding: ollama
+
+guardian:
+  # These are informational when running on Ollama — Spring AI reads the model
+  # names from spring.ai.ollama.* instead. Kept in sync for logs / diagnostics.
+  llm-model: ${OLLAMA_CHAT_MODEL:llama3.1}
+  embedding-model: ${OLLAMA_EMBEDDING_MODEL:nomic-embed-text}
+

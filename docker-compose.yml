@@ -1,0 +1,72 @@
+# Full stack: Guardian app + Qdrant + Neo4j.
+# For infra only (recommended during dev), use docker-compose.infra.yml.
+
+name: guardian
+
+services:
+  guardian:
+    build: .
+    container_name: proactive-guardian
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    environment:
+      GUARDIAN_QDRANT_URL: http://qdrant:6333
+      GUARDIAN_NEO4J_URI: bolt://neo4j:7687
+      GUARDIAN_NEO4J_USER: neo4j
+      GUARDIAN_NEO4J_PASS: guardianpass
+      GUARDIAN_OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GUARDIAN_GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GUARDIAN_GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      GUARDIAN_CONFLUENCE_BASE_URL: ${CONFLUENCE_BASE_URL:-}
+      GUARDIAN_CONFLUENCE_USER: ${CONFLUENCE_USER:-}
+      GUARDIAN_CONFLUENCE_TOKEN: ${CONFLUENCE_TOKEN:-}
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.11.0
+    container_name: guardian-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5.24
+    container_name: guardian-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/guardianpass
+      NEO4J_server_memory_pagecache_size: 512M
+      NEO4J_server_memory_heap_initial__size: 512M
+      NEO4J_server_memory_heap_max__size: 1G
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p guardianpass 'RETURN 1' >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  qdrant-data:
+  neo4j-data:
+  neo4j-logs:
+
