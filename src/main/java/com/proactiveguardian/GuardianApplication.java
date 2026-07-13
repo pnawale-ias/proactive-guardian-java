@@ -1,5 +1,6 @@
 package com.proactiveguardian;
 
+import com.proactiveguardian.config.BreakingChangeLlmProperties;
 import com.proactiveguardian.config.GuardianProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -12,7 +13,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableAsync
 @EnableScheduling
 @EnableRetry
-@EnableConfigurationProperties(GuardianProperties.class)
+@EnableConfigurationProperties({GuardianProperties.class, BreakingChangeLlmProperties.class})
 public class GuardianApplication {
 
     public static void main(String[] args) {

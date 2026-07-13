@@ -3,6 +3,8 @@ package com.proactiveguardian.notifier;
 import com.proactiveguardian.config.GuardianProperties;
 import com.proactiveguardian.model.Finding;
 import com.proactiveguardian.model.Severity;
+import org.kohsuke.github.GHIssueComment;
+import org.kohsuke.github.GHPullRequest;
 import org.kohsuke.github.GHRepository;
 import org.kohsuke.github.GitHub;
 import org.kohsuke.github.GitHubBuilder;
@@ -12,6 +14,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -27,6 +32,10 @@ public class GitHubNotifier {
             Severity.WARN,  "⚠️",
             Severity.BLOCK, "🚫"
     );
+
+    /** Hidden HTML marker embedded in every comment so we can detect duplicates. */
+    private static final String MARKER_PREFIX = "<!-- proactive-guardian:";
+    private static final String MARKER_SUFFIX = " -->";
 
     private final GitHub gh;
 
@@ -51,9 +60,57 @@ public class GitHubNotifier {
         if (findings == null || findings.isEmpty()) return;
         try {
             GHRepository repo = gh.getRepository(repoFullName);
-            repo.getPullRequest(prNumber).comment(render(findings));
+            GHPullRequest pr = repo.getPullRequest(prNumber);
+            String body = render(findings);
+            String marker = MARKER_PREFIX + fingerprint(findings) + MARKER_SUFFIX;
+
+            for (GHIssueComment existing : pr.getComments()) {
+                String eb = existing.getBody();
+                if (eb == null) continue;
+                // Exact-fingerprint match: same set of findings already reported.
+                if (eb.contains(marker)) {
+                    log.info("GitHub PR comment already present on {}#{} (fingerprint match) — skipping",
+                            repoFullName, prNumber);
+                    return;
+                }
+                // Any prior Guardian comment on this PR — skip too, so we don't
+                // spam the PR every polling cycle while findings are stable.
+                // Set guardian.github.always-comment=true to disable this guard.
+                if (eb.contains(MARKER_PREFIX)) {
+                    log.info("GitHub PR {}#{} already has a Proactive Guardian comment — skipping",
+                            repoFullName, prNumber);
+                    return;
+                }
+            }
+            pr.comment(marker + "\n" + body);
         } catch (IOException e) {
             log.warn("GitHub PR comment failed on {}#{}: {}", repoFullName, prNumber, e.getMessage());
+        }
+    }
+
+    /**
+     * Stable fingerprint over the finding identity tuple
+     * {@code (severity | category | title)} — deliberately IGNORES the rendered
+     * detail body and confidence, both of which fluctuate between runs when
+     * the LLM is enabled and would otherwise defeat deduplication.
+     */
+    static String fingerprint(List<Finding> findings) {
+        List<String> keys = new java.util.ArrayList<>();
+        for (Finding f : findings) {
+            keys.add((f.severity() == null ? "" : f.severity().name())
+                    + "|" + (f.category() == null ? "" : f.category())
+                    + "|" + (f.title()    == null ? "" : f.title()));
+        }
+        java.util.Collections.sort(keys);
+        String joined = String.join("\n", keys);
+        try {
+            byte[] d = MessageDigest.getInstance("SHA-256")
+                    .digest(joined.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(16);
+            for (int i = 0; i < 8; i++) hex.append(String.format("%02x", d[i]));
+            return hex.toString();
+        } catch (NoSuchAlgorithmException e) {
+            return Integer.toHexString(joined.hashCode());
         }
     }
 
@@ -76,4 +133,3 @@ public class GitHubNotifier {
         return sb.toString();
     }
 }
-

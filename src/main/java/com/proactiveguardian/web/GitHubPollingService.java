@@ -80,19 +80,51 @@ public class GitHubPollingService {
         try {
             GHRepository repo = gh.getRepository(ownerRepo);
             int processed = 0;
+            int skippedClosed = 0;
+            int skippedDraft  = 0;
+            int skippedUnchanged = 0;
+            java.util.List<String> openSummary = new java.util.ArrayList<>();
+
+            // Server-side OPEN filter keeps this cheap for repos with lots of
+            // closed history. The extra state re-check below is belt-and-braces
+            // — the GitHub API very occasionally returns transitional states.
             for (GHPullRequest pr : repo.getPullRequests(GHIssueState.OPEN)) {
+                GHIssueState state = pr.getState();
+
+                if (state != GHIssueState.OPEN) {
+                    skippedClosed++;
+                    log.debug("PR #{} '{}' state={} — ignored (not OPEN)",
+                            pr.getNumber(), pr.getTitle(), state);
+                    continue;
+                }
+                if (pr.isDraft()) {
+                    skippedDraft++;
+                    log.debug("PR #{} '{}' state=OPEN(draft) — ignored (draft)",
+                            pr.getNumber(), pr.getTitle());
+                    continue;
+                }
+
+                openSummary.add("#" + pr.getNumber() + " '" + pr.getTitle() + "'");
+
                 Date updated = pr.getUpdatedAt();
                 long updatedMs = updated == null ? 0L : updated.getTime();
                 Long seen = lastSeen.get(pr.getNumber());
-                if (seen != null && updatedMs <= seen) continue;   // no change since last poll
+                if (seen != null && updatedMs <= seen) {
+                    skippedUnchanged++;
+                    continue;   // no change since last poll
+                }
 
-                log.info("Polled PR #{} '{}' (updated {}) — dispatching to pipeline",
-                        pr.getNumber(), pr.getTitle(), updated);
+                log.info("Polled PR #{} '{}' state={} (updated {}) — dispatching to pipeline",
+                        pr.getNumber(), pr.getTitle(), state, updated);
                 pipeline.process(toEvent(repo, pr));
                 lastSeen.put(pr.getNumber(), updatedMs);
                 processed++;
             }
-            log.debug("Poll cycle: {} open PR(s), {} dispatched", lastSeen.size(), processed);
+            log.info("Poll cycle {}: open={} [{}], dispatched={}, unchanged={}, closed/skipped={}, drafts={}",
+                    ownerRepo,
+                    openSummary.size(),
+                    String.join(", ", openSummary),
+                    processed, skippedUnchanged, skippedClosed, skippedDraft);
         } catch (IOException e) {
             log.warn("GitHub poll failed for {}: {}", ownerRepo, e.getMessage());
         }

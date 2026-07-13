@@ -55,6 +55,20 @@ guardian:
   # ---- Analysis knobs ---------------------------------------------------
   risk-threshold: 0.75
 
+  # ---- BreakingChangeDetector LLM cross-repo impact ---------------------
+  # After lexical/graph consumer discovery, BreakingChangeDetector asks the
+  # configured Spring AI ChatModel which downstream consumers (in OTHER
+  # repos) will actually break due to the change. Set enabled=false to
+  # skip the LLM call and fall back to the pure lexical baseline.
+  breaking:
+    llm:
+      enabled:                  ${GUARDIAN_BREAKING_LLM_ENABLED:true}
+      max-consumers:            ${GUARDIAN_BREAKING_LLM_MAX_CONSUMERS:8}
+      max-snippet-chars:        ${GUARDIAN_BREAKING_LLM_MAX_SNIPPET_CHARS:500}
+      max-change-chars:         ${GUARDIAN_BREAKING_LLM_MAX_CHANGE_CHARS:1500}
+      timeout-ms:               ${GUARDIAN_BREAKING_LLM_TIMEOUT_MS:15000}
+      min-consumer-confidence:  ${GUARDIAN_BREAKING_LLM_MIN_CONSUMER_CONFIDENCE:0.6}
+
 # ---- Spring AI ----------------------------------------------------------
 # Default provider is OpenAI. The 'local' profile (see application-local.yml)
 # overrides spring.ai.model.* to 'ollama'. AiProfileSelector picks 'local'
@@ -105,6 +119,11 @@ logging:
     # a property/label the database has never seen. Neo4jGraphStore pre-registers
     # the keys we use, but silence the logger anyway to keep cold-start logs clean.
     org.springframework.data.neo4j.cypher.unrecognized: ERROR
+    # The Qdrant Java client logs a full stack trace at ERROR for every failed
+    # operation (e.g. when Qdrant isn't running locally). We already handle
+    # unavailability with a circuit-breaker in QdrantVectorStore, so silence
+    # the library-level noise.
+    io.qdrant.client.QdrantClient: 'OFF'
 
 qdrant:
   host: ${QDRANT_HOST:localhost}

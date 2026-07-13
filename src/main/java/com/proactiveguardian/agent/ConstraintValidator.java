@@ -41,7 +41,19 @@ public class ConstraintValidator {
         this.chatModel = chatModel;
         this.mapper = mapper;
         this.promptTemplate = new String(promptResource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        log.info("ConstraintValidator wired with ChatModel={}", chatModel.getClass().getName());
+        log.info("ConstraintValidator wired with ChatModel={} model={}",
+                chatModel.getClass().getName(), resolveModelName(chatModel));
+    }
+
+    private static String resolveModelName(Object chatModel) {
+        try {
+            Object opts = chatModel.getClass().getMethod("getDefaultOptions").invoke(chatModel);
+            if (opts == null) return "<unknown>";
+            Object name = opts.getClass().getMethod("getModel").invoke(opts);
+            return name == null ? "<unknown>" : name.toString();
+        } catch (ReflectiveOperationException e) {
+            return "<unknown>";
+        }
     }
 
     public List<Finding> check(Artifact artifact) {

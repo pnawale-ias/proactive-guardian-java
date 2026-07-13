@@ -1,3 +1,5 @@
 org.springframework.boot.env.EnvironmentPostProcessor=\
 com.proactiveguardian.config.AiProfileSelector
 
+org.springframework.context.ApplicationListener=\
+com.proactiveguardian.config.AiProfileSelector

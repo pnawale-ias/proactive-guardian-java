@@ -1,0 +1,12 @@
+# One consumer repo per line:  <repo_url>   <repo_name>
+# Lines starting with # are ignored. Add every downstream repo whose code
+# you want BreakingChangeDetector to check when a PR lands on the watched
+# producer repo (GITHUB_REPO_URL).
+#
+# Examples — replace with your real repos:
+# https://github.com/softwarepravin2007/billing-api.git        billing-api
+
+# --- Active consumers ---
+https://github.com/softwarepravin2007/consumerservice.git                consumerservice
+https://github.com/softwarepravin2007/springboot-minikube-gitworkflow-project.git  springboot-minikube-gitworkflow-project
+

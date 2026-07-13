@@ -26,6 +26,42 @@ public interface VectorStore {
         return searchSimilar(text, k, null);
     }
 
+    /**
+     * Distinct {@code repo} payload values present in the store, mapped to the
+     * number of artifacts each repo contributes. Used at startup to print an
+     * "ingested services" summary. Default is empty (fakes / non-Qdrant stores).
+     */
+    default Map<String, Long> repoCounts() {
+        return Map.of();
+    }
+
+    /**
+     * Scan the collection and return every artifact whose {@code content},
+     * {@code name}, or {@code path} payload literally contains {@code token}
+     * (case-insensitive, whole-word). Used by the consumer-awareness advisor
+     * to build a deterministic list of downstream repos without relying on
+     * embedding-similarity rankings (which are unreliable on small KBs).
+     *
+     * <p>Default is empty (fakes / non-Qdrant stores can opt in).</p>
+     *
+     * @param token   token to match (e.g. producer repo short name)
+     * @param maxHits soft cap on returned hits — implementations may still
+     *                need to scroll further to find them.
+     */
+    default List<Hit> scanReferences(String token, int maxHits) {
+        return List.of();
+    }
+
+    /**
+     * Return every ingested Confluence page as a lightweight summary
+     * ({@code id}, {@code title}, {@code url}, {@code page_id}, {@code version}).
+     * Used by the startup banner to advertise which docs are in the KB.
+     * Default is empty (fakes / non-Qdrant stores can opt in).
+     */
+    default List<Map<String, Object>> listConfluencePages(int maxPages) {
+        return List.of();
+    }
+
     /** Individual search result. */
     record Hit(double score, Map<String, Object> payload) {
         public String getStr(String field) {

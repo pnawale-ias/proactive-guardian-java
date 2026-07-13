@@ -50,6 +50,10 @@ public class QdrantVectorStore implements VectorStore, AutoCloseable {
     /** Native vector dim of the active embedding model — used to (re)create the collection. */
     private final int vectorSize;
 
+    /** Circuit-breaker: once Qdrant is confirmed unreachable, short-circuit for a while. */
+    private volatile long unavailableUntilMs = 0L;
+    private static final long UNAVAILABLE_BACKOFF_MS = 30_000L;
+
     public QdrantVectorStore(GuardianProperties props,
                              EmbeddingService embeddings,
                              ObjectMapper objectMapper) {
@@ -154,14 +158,25 @@ public class QdrantVectorStore implements VectorStore, AutoCloseable {
         }
         try {
             client.upsertAsync(props.qdrantCollection(), points).get();
-        } catch (InterruptedException | ExecutionException e) {
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Qdrant upsert failed", e);
+        } catch (ExecutionException e) {
+            if (isConnectionError(e)) {
+                unavailableUntilMs = System.currentTimeMillis() + UNAVAILABLE_BACKOFF_MS;
+                log.warn("Qdrant unavailable ({}); skipping upsert of {} artifact(s)",
+                        rootMessage(e), artifacts.size());
+                return;
+            }
+            log.warn("Qdrant upsert failed: {}", rootMessage(e));
         }
     }
 
     @Override
     public List<Hit> searchSimilar(String text, int k, String excludeId) {
+        long now = System.currentTimeMillis();
+        if (now < unavailableUntilMs) {
+            return List.of();
+        }
         float[] vec = embeddings.embedOne(text);
         List<Float> vecList = new ArrayList<>(vec.length);
         for (float f : vec) vecList.add(f);
@@ -186,10 +201,52 @@ public class QdrantVectorStore implements VectorStore, AutoCloseable {
                 if (hits.size() >= k) break;
             }
             return hits;
-        } catch (InterruptedException | ExecutionException e) {
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Qdrant search failed", e);
+            return List.of();
+        } catch (ExecutionException e) {
+            if (isConnectionError(e)) {
+                unavailableUntilMs = System.currentTimeMillis() + UNAVAILABLE_BACKOFF_MS;
+                log.warn("Qdrant unavailable ({}); short-circuiting similarity searches for {}s",
+                        rootMessage(e), UNAVAILABLE_BACKOFF_MS / 1000);
+                return List.of();
+            }
+            log.warn("Qdrant search failed: {}", rootMessage(e));
+            return List.of();
         }
+    }
+
+    private void tripIfUnavailable(Throwable e, String op) {
+        if (isConnectionError(e)) {
+            if (System.currentTimeMillis() >= unavailableUntilMs) {
+                log.warn("Qdrant unavailable during {} ({}); short-circuiting for {}s",
+                        op, rootMessage(e), UNAVAILABLE_BACKOFF_MS / 1000);
+            }
+            unavailableUntilMs = System.currentTimeMillis() + UNAVAILABLE_BACKOFF_MS;
+        } else {
+            log.debug("{} scroll failed: {}", op, e.getMessage());
+        }
+    }
+
+    private static boolean isConnectionError(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            String n = c.getClass().getName();
+            String msg = String.valueOf(c.getMessage());
+            if (n.contains("ConnectException")
+                    || n.contains("UnresolvedAddressException")
+                    || n.endsWith("StatusRuntimeException")
+                    || msg.contains("UNAVAILABLE")
+                    || msg.contains("Connection refused")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String rootMessage(Throwable t) {
+        Throwable c = t;
+        while (c.getCause() != null) c = c.getCause();
+        return c.getClass().getSimpleName() + ": " + c.getMessage();
     }
 
     /** Deterministically map an app-level artifact id to a Qdrant UUID. */
@@ -236,6 +293,151 @@ public class QdrantVectorStore implements VectorStore, AutoCloseable {
     @PreDestroy
     public void close() {
         client.close();
+    }
+
+    /**
+     * Enumerate distinct {@code repo} payload values in the collection by
+     * scrolling through it in pages. Caps at ~50k points to avoid blocking
+     * startup on huge collections.
+     */
+    @Override
+    public Map<String, Long> repoCounts() {
+        java.util.Map<String, Long> counts = new java.util.TreeMap<>();
+        if (System.currentTimeMillis() < unavailableUntilMs) return counts;
+        int pageSize = 512;
+        int scanned = 0;
+        int maxScan = 50_000;
+        io.qdrant.client.grpc.Points.PointId offset = null;
+        try {
+            while (scanned < maxScan) {
+                var req = io.qdrant.client.grpc.Points.ScrollPoints.newBuilder()
+                        .setCollectionName(props.qdrantCollection())
+                        .setLimit(pageSize)
+                        .setWithPayload(io.qdrant.client.grpc.Points.WithPayloadSelector
+                                .newBuilder().setEnable(true).build());
+                if (offset != null) req.setOffset(offset);
+                var resp = client.scrollAsync(req.build()).get();
+                var pts  = resp.getResultList();
+                if (pts.isEmpty()) break;
+                for (var p : pts) {
+                    Value v = p.getPayloadMap().get("repo");
+                    String repo = (v != null && v.getKindCase() == Value.KindCase.STRING_VALUE)
+                            ? v.getStringValue() : "(unknown)";
+                    counts.merge(repo, 1L, Long::sum);
+                }
+                scanned += pts.size();
+                if (!resp.hasNextPageOffset()) break;
+                offset = resp.getNextPageOffset();
+            }
+        } catch (Exception e) {
+            tripIfUnavailable(e, "repoCounts");
+        }
+        return counts;
+    }
+
+    /**
+     * Scroll the collection and return artifacts whose {@code content},
+     * {@code name}, or {@code path} payload contains {@code token} as a
+     * whole word (case-insensitive). Deterministic — does not depend on
+     * embedding similarity rankings.
+     */
+    @Override
+    public List<Hit> scanReferences(String token, int maxHits) {
+        if (token == null || token.isBlank()) return List.of();
+        if (System.currentTimeMillis() < unavailableUntilMs) return List.of();
+        java.util.regex.Pattern pat = java.util.regex.Pattern.compile(
+                "(?i)(?<![A-Za-z0-9_])" + java.util.regex.Pattern.quote(token) + "(?![A-Za-z0-9_])");
+        java.util.List<Hit> out = new java.util.ArrayList<>();
+        int pageSize = 512;
+        int scanned = 0;
+        int maxScan = 50_000;
+        io.qdrant.client.grpc.Points.PointId offset = null;
+        try {
+            while (scanned < maxScan && out.size() < maxHits) {
+                var req = io.qdrant.client.grpc.Points.ScrollPoints.newBuilder()
+                        .setCollectionName(props.qdrantCollection())
+                        .setLimit(pageSize)
+                        .setWithPayload(io.qdrant.client.grpc.Points.WithPayloadSelector
+                                .newBuilder().setEnable(true).build());
+                if (offset != null) req.setOffset(offset);
+                var resp = client.scrollAsync(req.build()).get();
+                var pts  = resp.getResultList();
+                if (pts.isEmpty()) break;
+                for (var p : pts) {
+                    Map<String, Object> payload = fromPayload(p.getPayloadMap());
+                    String content = str(payload.get("content"));
+                    String name    = str(payload.get("name"));
+                    String path    = str(payload.get("path"));
+                    if ((content != null && pat.matcher(content).find())
+                            || (name != null && pat.matcher(name).find())
+                            || (path != null && pat.matcher(path).find())) {
+                        out.add(new Hit(1.0, payload));
+                        if (out.size() >= maxHits) break;
+                    }
+                }
+                scanned += pts.size();
+                if (!resp.hasNextPageOffset()) break;
+                offset = resp.getNextPageOffset();
+            }
+        } catch (Exception e) {
+            tripIfUnavailable(e, "scanReferences");
+        }
+        return out;
+    }
+
+    private static String str(Object v) {
+        return v == null ? null : v.toString();
+    }
+
+    /**
+     * Scroll the collection and return every artifact whose {@code type}
+     * payload is {@code confluence_page}. Used by the startup banner.
+     */
+    @Override
+    public List<Map<String, Object>> listConfluencePages(int maxPages) {
+        java.util.List<Map<String, Object>> out = new java.util.ArrayList<>();
+        if (System.currentTimeMillis() < unavailableUntilMs) return out;
+        int pageSize = 512;
+        int scanned = 0;
+        int maxScan = 50_000;
+        io.qdrant.client.grpc.Points.PointId offset = null;
+        try {
+            while (scanned < maxScan && out.size() < maxPages) {
+                var req = io.qdrant.client.grpc.Points.ScrollPoints.newBuilder()
+                        .setCollectionName(props.qdrantCollection())
+                        .setLimit(pageSize)
+                        .setWithPayload(io.qdrant.client.grpc.Points.WithPayloadSelector
+                                .newBuilder().setEnable(true).build());
+                if (offset != null) req.setOffset(offset);
+                var resp = client.scrollAsync(req.build()).get();
+                var pts  = resp.getResultList();
+                if (pts.isEmpty()) break;
+                for (var p : pts) {
+                    Map<String, Object> payload = fromPayload(p.getPayloadMap());
+                    Object type = payload.get("type");
+                    if (type == null || !"confluence_page".equalsIgnoreCase(type.toString())) continue;
+                    java.util.Map<String, Object> row = new java.util.LinkedHashMap<>();
+                    row.put("id",      payload.get("id"));
+                    row.put("title",   payload.get("name"));
+                    row.put("url",     payload.get("url"));
+                    Object meta = payload.get("metadata");
+                    if (meta instanceof Map<?, ?> mm) {
+                        row.put("page_id", mm.get("page_id"));
+                        row.put("version", mm.get("version"));
+                    }
+                    out.add(row);
+                    if (out.size() >= maxPages) break;
+                }
+                scanned += pts.size();
+                if (!resp.hasNextPageOffset()) break;
+                offset = resp.getNextPageOffset();
+            }
+        } catch (Exception e) {
+            tripIfUnavailable(e, "listConfluencePages");
+        }
+        log.info("listConfluencePages: scanned {} point(s), matched {} confluence_page artifact(s) in collection '{}'",
+                scanned, out.size(), props.qdrantCollection());
+        return out;
     }
 }
 

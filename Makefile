@@ -5,7 +5,7 @@ INFRA_COMPOSE ?= $(COMPOSE) -f docker-compose.infra.yml
         up down logs \
         infra-up infra-down infra-restart infra-logs infra-ps infra-nuke \
         infra-neo4j-shell infra-qdrant-ui smoke \
-        start stop restart status app-smoke app-logs
+        start stop restart status app-smoke app-logs deploy
 
 help:
 	@echo "Proactive Guardian (Spring Boot) — common targets"
@@ -40,6 +40,7 @@ help:
 	@echo "    make status    — show port + process status"
 	@echo "    make app-smoke — /healthz + Ollama embed/chat + /ingest/repo"
 	@echo "    make app-logs  — tail the Spring Boot app log"
+	@echo "    make deploy    — stop → build → package → restart → app-logs"
 
 # ---- Maven ---------------------------------------------------------------
 
@@ -79,6 +80,9 @@ app-smoke:
 
 app-logs:
 	@./scripts/guardian.sh logs
+
+# One-shot redeploy: stop the running app, rebuild the jar, restart, then tail.
+deploy: stop build package restart app-logs
 
 clean:
 	./mvnw -B -q clean

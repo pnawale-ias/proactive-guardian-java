@@ -36,7 +36,8 @@ class GuardianOrchestratorTest {
                 new BreakingChangeDetector(vs, gs),
                 new DuplicateDetector(vs, props(0.99)),
                 new DependencyAnalyzer(gs),
-                constraintValidator(vs)
+                constraintValidator(vs),
+                new YamlSyntaxValidator()
         );
 
         Artifact before = new Artifact(
@@ -71,7 +72,8 @@ class GuardianOrchestratorTest {
                 new BreakingChangeDetector(vs, gs),
                 new DuplicateDetector(vs, props(0.99)),
                 new DependencyAnalyzer(gs),
-                constraintValidator(vs)
+                constraintValidator(vs),
+                new YamlSyntaxValidator()
         );
 
         Artifact fresh = new Artifact(

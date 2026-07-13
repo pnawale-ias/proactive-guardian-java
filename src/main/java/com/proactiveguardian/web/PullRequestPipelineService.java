@@ -1,5 +1,7 @@
 package com.proactiveguardian.web;
 
+import com.proactiveguardian.agent.ConfluenceDocAdvisor;
+import com.proactiveguardian.agent.ConsumerAwarenessAdvisor;
 import com.proactiveguardian.agent.GuardianOrchestrator;
 import com.proactiveguardian.config.GuardianProperties;
 import com.proactiveguardian.ingestion.GitIngester;
@@ -33,15 +35,21 @@ public class PullRequestPipelineService {
     private final GuardianProperties props;
     private final GitIngester gitIngester;
     private final GuardianOrchestrator orchestrator;
+    private final ConsumerAwarenessAdvisor consumerAwareness;
+    private final ConfluenceDocAdvisor confluenceDocAdvisor;
     private final ObjectProvider<GitHubNotifier> notifier;
 
     public PullRequestPipelineService(GuardianProperties props,
                                       GitIngester gitIngester,
                                       GuardianOrchestrator orchestrator,
+                                      ConsumerAwarenessAdvisor consumerAwareness,
+                                      ConfluenceDocAdvisor confluenceDocAdvisor,
                                       ObjectProvider<GitHubNotifier> notifier) {
         this.props = props;
         this.gitIngester = gitIngester;
         this.orchestrator = orchestrator;
+        this.consumerAwareness = consumerAwareness;
+        this.confluenceDocAdvisor = confluenceDocAdvisor;
         this.notifier = notifier;
     }
 
@@ -79,6 +87,22 @@ public class PullRequestPipelineService {
                     log.debug("PR ref fetch skipped/failed ({}): {}",
                             fe.getClass().getSimpleName(), fe.getMessage());
                 }
+
+                // CRITICAL: `git clone` leaves the working tree at the default
+                // branch (= the base). Without an explicit checkout, every
+                // file under `tmp/` is the *base* version and the pipeline
+                // would compare base-vs-base and produce zero findings.
+                // Checkout the PR head SHA so the working tree = after.
+                try {
+                    git.checkout()
+                       .setName(headSha)
+                       .setForced(true)
+                       .call();
+                    log.debug("checked out head {} into working tree for {}", shortSha(headSha), repoName);
+                } catch (Exception ce) {
+                    log.warn("checkout of head {} failed for {}: {} — after-content will fall back to base branch",
+                            shortSha(headSha), repoName, ce.getMessage());
+                }
             }
             log.debug("cloned {} into {} ({} ms)", repoName, tmp, System.currentTimeMillis() - t0);
 
@@ -89,19 +113,67 @@ public class PullRequestPipelineService {
             for (GitIngester.Pair p : pairs) {
                 allFindings.addAll(orchestrator.analyzeChange(p.before(), p.after()));
             }
-            log.info("pipeline done  {}#{} — {} finding(s) across {} pair(s) in {} ms",
-                    repoName, prNumber, allFindings.size(), pairs.size(),
+
+            // Always surface the known-consumer blast radius exactly once per PR,
+            // even when no pair produced a specific breaking-change signal — a
+            // seemingly unrelated change can still break downstream repos.
+            try {
+                allFindings.addAll(consumerAwareness.advise(repoName, pairs));
+            } catch (Exception ce) {
+                log.debug("consumer-awareness advisory skipped: {}", ce.toString());
+            }
+
+            // Cross-reference the diff against ingested Confluence pages —
+            // if a page mentions a class / file that this PR touches, ask
+            // the reviewer to update the doc (or confirm it's still valid).
+            try {
+                allFindings.addAll(confluenceDocAdvisor.advise(pairs));
+            } catch (Exception ce) {
+                log.debug("confluence-doc advisory skipped: {}", ce.toString());
+            }
+            // Same file can appear in multiple diff pairs (e.g. rename +
+            // modify) and several agents can emit near-identical advisories.
+            // Collapse duplicates so the PR comment isn't spammed.
+            List<Finding> deduped = dedupe(allFindings);
+            log.info("pipeline done  {}#{} — {} finding(s) ({} after dedupe) across {} pair(s) in {} ms",
+                    repoName, prNumber, allFindings.size(), deduped.size(), pairs.size(),
                     System.currentTimeMillis() - t0);
 
             notifier.ifAvailable(n -> {
-                log.info("posting PR comment to {}#{} ({} finding(s))", repoName, prNumber, allFindings.size());
-                n.postPrComment(repoName, prNumber, allFindings);
+                log.info("posting PR comment to {}#{} ({} finding(s))", repoName, prNumber, deduped.size());
+                n.postPrComment(repoName, prNumber, deduped);
             });
         } catch (Exception e) {
             log.error("PR processing failed for {}#{}: {}", repoName, prNumber, e.getMessage(), e);
         } finally {
             if (tmp != null) deleteRecursively(tmp);
         }
+    }
+
+    /**
+     * Deduplicate findings by (category, title, sorted-evidence). Keeps the
+     * first occurrence — preserves ordering the agents produced. Different
+     * wording of the same finding (e.g. two variants of the workflow-schema
+     * message for the same file) is collapsed via a secondary key that
+     * ignores the free-text title tail after the file path.
+     */
+    private static List<Finding> dedupe(List<Finding> findings) {
+        java.util.LinkedHashMap<String, Finding> byKey = new java.util.LinkedHashMap<>();
+        for (Finding f : findings) {
+            String ev = f.evidence() == null ? "" :
+                    f.evidence().stream().sorted().toList().toString();
+            // Primary: exact (cat + title + evidence).
+            String primary = f.category() + "|" + f.title() + "|" + ev;
+            // Secondary: (cat + evidence) — collapses re-worded duplicates
+            // pointing at the same file/location.
+            String secondary = f.category() + "||" + ev;
+            if (byKey.containsKey(primary) || byKey.containsKey(secondary)) continue;
+            byKey.put(primary, f);
+            byKey.put(secondary, f);
+        }
+        // Deduplicate the values (we inserted each finding under two keys).
+        java.util.LinkedHashSet<Finding> unique = new java.util.LinkedHashSet<>(byKey.values());
+        return new ArrayList<>(unique);
     }
 
     private static String shortSha(String sha) {

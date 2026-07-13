@@ -159,13 +159,12 @@ public class GitIngester {
                     if (Files.exists(p)) afterArts = codeParser.parseFile(p, repoName);
                 }
                 if (d.getOldPath() != null && !DiffEntry.DEV_NULL.equals(d.getOldPath())) {
-                    Path tmp = extractBlob(repo, baseSha, d.getOldPath());
+                    // Keep the base-blob for the lifetime of the PR temp dir so
+                    // downstream detectors (BreakingChangeDetector) can re-read
+                    // the raw file, not just the JavaParser-normalised snippet.
+                    Path tmp = extractBlobInto(repo, baseSha, d.getOldPath(), localPath);
                     if (tmp != null) {
-                        try {
-                            beforeArts = codeParser.parseFile(tmp, repoName);
-                        } finally {
-                            try { Files.deleteIfExists(tmp); } catch (Exception ignored) {}
-                        }
+                        beforeArts = codeParser.parseFile(tmp, repoName);
                     }
                 }
 
@@ -245,6 +244,31 @@ public class GitIngester {
             }
         } catch (Exception e) {
             log.debug("blob extract failed for {}@{}: {}", repoRelativePath, sha, e.getMessage());
+            return null;
+        }
+    }
+
+     /**
+     * Extract the file at {@code sha} into {@code <clonePath>/.guardian-base/<repoRelativePath>}
+     * so it survives for the whole pipeline run and is cleaned up when the
+     * caller deletes the PR temp dir. Returns {@code null} on failure.
+     */
+    private static Path extractBlobInto(Repository repo, String sha,
+                                        String repoRelativePath, Path clonePath) {
+        try (RevWalk rw = new RevWalk(repo)) {
+            RevCommit commit = rw.parseCommit(ObjectId.fromString(sha));
+            try (TreeWalk tw = TreeWalk.forPath(repo, repoRelativePath, commit.getTree())) {
+                if (tw == null) return null;
+                ObjectLoader loader = repo.open(tw.getObjectId(0));
+                Path dst = clonePath.resolve(".guardian-base").resolve(repoRelativePath);
+                Files.createDirectories(dst.getParent());
+                try (OutputStream os = Files.newOutputStream(dst)) {
+                    loader.copyTo(os);
+                }
+                return dst;
+            }
+        } catch (Exception e) {
+            log.debug("blob extract-into failed for {}@{}: {}", repoRelativePath, sha, e.getMessage());
             return null;
         }
     }

@@ -244,13 +244,53 @@ public class Neo4jGraphStore implements GraphStore {
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    /** Circuit-breaker: once Neo4j is confirmed unreachable, short-circuit reads for a while. */
+    private volatile long unavailableUntilMs = 0L;
+    private static final long UNAVAILABLE_BACKOFF_MS = 30_000L;
+
     private List<Map<String, Object>> runList(String cypher, Map<String, Object> params) {
+        if (System.currentTimeMillis() < unavailableUntilMs) {
+            return List.of();
+        }
         try {
             return new ArrayList<>(neo4j.query(cypher).bindAll(params).fetch().all());
         } catch (Exception e) {
-            log.warn("Cypher query failed ({}): {}", cypher.strip().split("\n", 2)[0], e.getMessage());
+            if (isConnectionError(e)) {
+                if (System.currentTimeMillis() >= unavailableUntilMs) {
+                    log.warn("Neo4j unavailable ({}); short-circuiting graph queries for {}s",
+                            rootMessage(e), UNAVAILABLE_BACKOFF_MS / 1000);
+                }
+                unavailableUntilMs = System.currentTimeMillis() + UNAVAILABLE_BACKOFF_MS;
+            } else {
+                log.warn("Cypher query failed ({}): {}", cypher.strip().split("\n", 2)[0], e.getMessage());
+            }
             return List.of();
         }
+    }
+
+    private static boolean isConnectionError(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            String n = c.getClass().getName();
+            String msg = String.valueOf(c.getMessage());
+            if (n.contains("ServiceUnavailable")
+                    || n.contains("ConnectException")
+                    || n.contains("UnresolvedAddressException")
+                    || n.contains("DiscoveryException")
+                    || n.contains("SessionExpired")
+                    || msg.contains("Unable to connect")
+                    || msg.contains("Connection refused")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String rootMessage(Throwable t) {
+        Throwable c = t;
+        while (c.getCause() != null) c = c.getCause();
+        String m = c.getMessage();
+        return c.getClass().getSimpleName() + (m != null ? ": " + m : "");
     }
 
     private static int clampHops(int hops) {

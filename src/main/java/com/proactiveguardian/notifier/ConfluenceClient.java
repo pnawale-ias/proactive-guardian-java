@@ -68,5 +68,30 @@ public class ConfluenceClient {
                 .retrieve()
                 .toBodilessEntity();
     }
+
+    /**
+     * Create a new Confluence page. When {@code parentPageId} is non-null the
+     * page is created as a child of that page; otherwise it lands at the
+     * space root.
+     *
+     * @return the parsed JSON response from Confluence (contains id, _links, …)
+     */
+    public JsonNode createPage(String spaceKey, String title, String htmlBody, String parentPageId) {
+        java.util.Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("type", "page");
+        payload.put("title", title);
+        payload.put("space", Map.of("key", spaceKey));
+        if (parentPageId != null && !parentPageId.isBlank()) {
+            payload.put("ancestors", List.of(Map.of("id", parentPageId)));
+        }
+        payload.put("body", Map.of("storage",
+                Map.of("value", htmlBody, "representation", "storage")));
+        return http.post()
+                .uri("/wiki/rest/api/content")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(payload)
+                .retrieve()
+                .body(JsonNode.class);
+    }
 }
 
