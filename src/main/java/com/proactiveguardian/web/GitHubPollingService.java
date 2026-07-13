@@ -1,12 +1,9 @@
 package com.proactiveguardian.web;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.proactiveguardian.config.GuardianProperties;
 import com.proactiveguardian.web.dto.GithubPullRequestEvent;
-import org.kohsuke.github.GHIssueState;
-import org.kohsuke.github.GHPullRequest;
-import org.kohsuke.github.GHRepository;
-import org.kohsuke.github.GitHub;
-import org.kohsuke.github.GitHubBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -14,23 +11,16 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Polls the GitHub REST API for open pull requests on the configured repo and
- * hands each new/updated PR to {@link PullRequestPipelineService} — exactly the
- * same code path as the {@code /webhook/github} handler.
- *
- * <p>Purpose: on developer laptops / CI runners with no public inbound URL,
- * GitHub cannot deliver webhooks directly. Polling uses only OUTBOUND HTTPS
- * to {@code api.github.com}, which almost every corporate proxy already
- * permits.</p>
+ * Polls GitHub for open pull requests using the {@code gh} CLI so no PAT
+ * configuration is needed — {@code gh}'s own auth (keyring / GITHUB_TOKEN env
+ * var) is used instead.
  *
  * <p>Enable with {@code guardian.github-poll-enabled=true} (or env
- * {@code GITHUB_POLL_ENABLED=true}). Default interval is 60 s, override with
- * {@code guardian.github-poll-interval-ms} / {@code GITHUB_POLL_INTERVAL_MS}.</p>
+ * {@code GITHUB_POLL_ENABLED=true}). Default interval is 60 s.</p>
  */
 @Component
 @ConditionalOnProperty(name = "guardian.github-poll-enabled", havingValue = "true")
@@ -38,36 +28,21 @@ public class GitHubPollingService {
 
     private static final Logger log = LoggerFactory.getLogger(GitHubPollingService.class);
 
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     private final GuardianProperties props;
     private final PullRequestPipelineService pipeline;
 
-    /** PR number → last processed updated_at (millis since epoch). */
-    private final Map<Integer, Long> lastSeen = new HashMap<>();
-
-    private final GitHub gh;
+    /** PR number → last processed updated_at string (ISO-8601). */
+    private final Map<Integer, String> lastSeen = new HashMap<>();
 
     public GitHubPollingService(GuardianProperties props, PullRequestPipelineService pipeline) {
         this.props = props;
         this.pipeline = pipeline;
-        this.gh = buildClient(props);
-    }
-
-    private static GitHub buildClient(GuardianProperties props) {
-        try {
-            String token = props.githubToken();
-            if (token != null && !token.isBlank()) {
-                return new GitHubBuilder().withOAuthToken(token).build();
-            }
-            log.warn("GITHUB_TOKEN not set — using anonymous GitHub client "
-                    + "(60 req/hour rate limit, no access to private repos)");
-            return GitHub.connectAnonymously();
-        } catch (IOException e) {
-            throw new IllegalStateException("Failed to build GitHub client", e);
-        }
     }
 
     @Scheduled(
-            fixedDelayString = "${guardian.github-poll-interval-ms:60000}",
+            fixedDelayString  = "${guardian.github-poll-interval-ms:60000}",
             initialDelayString = "${guardian.github-poll-interval-ms:60000}"
     )
     public void poll() {
@@ -78,72 +53,97 @@ public class GitHubPollingService {
         }
 
         try {
-            GHRepository repo = gh.getRepository(ownerRepo);
-            int processed = 0;
-            int skippedClosed = 0;
-            int skippedDraft  = 0;
-            int skippedUnchanged = 0;
-            java.util.List<String> openSummary = new java.util.ArrayList<>();
+            String json = runGhApi(ownerRepo);
+            JsonNode prs = MAPPER.readTree(json);
 
-            // Server-side OPEN filter keeps this cheap for repos with lots of
-            // closed history. The extra state re-check below is belt-and-braces
-            // — the GitHub API very occasionally returns transitional states.
-            for (GHPullRequest pr : repo.getPullRequests(GHIssueState.OPEN)) {
-                GHIssueState state = pr.getState();
+            int processed = 0, skippedDraft = 0, skippedUnchanged = 0;
 
-                if (state != GHIssueState.OPEN) {
-                    skippedClosed++;
-                    log.debug("PR #{} '{}' state={} — ignored (not OPEN)",
-                            pr.getNumber(), pr.getTitle(), state);
-                    continue;
-                }
-                if (pr.isDraft()) {
+            for (JsonNode pr : prs) {
+                if (pr.path("draft").asBoolean(false)) {
                     skippedDraft++;
-                    log.debug("PR #{} '{}' state=OPEN(draft) — ignored (draft)",
-                            pr.getNumber(), pr.getTitle());
+                    log.debug("PR #{} '{}' — ignored (draft)", pr.path("number").asInt(), pr.path("title").asText());
                     continue;
                 }
 
-                openSummary.add("#" + pr.getNumber() + " '" + pr.getTitle() + "'");
+                int number = pr.path("number").asInt();
+                String updatedAt = pr.path("updated_at").asText("");
+                String seen = lastSeen.get(number);
 
-                Date updated = pr.getUpdatedAt();
-                long updatedMs = updated == null ? 0L : updated.getTime();
-                Long seen = lastSeen.get(pr.getNumber());
-                if (seen != null && updatedMs <= seen) {
+                if (updatedAt.equals(seen)) {
                     skippedUnchanged++;
-                    continue;   // no change since last poll
+                    continue;
                 }
 
-                log.info("Polled PR #{} '{}' state={} (updated {}) — dispatching to pipeline",
-                        pr.getNumber(), pr.getTitle(), state, updated);
-                pipeline.process(toEvent(repo, pr));
-                lastSeen.put(pr.getNumber(), updatedMs);
+                log.info("Polled PR #{} '{}' (updated {}) — dispatching to pipeline",
+                        number, pr.path("title").asText(), updatedAt);
+
+                pipeline.process(toEvent(pr));
+                lastSeen.put(number, updatedAt);
                 processed++;
             }
-            log.info("Poll cycle {}: open={} [{}], dispatched={}, unchanged={}, closed/skipped={}, drafts={}",
-                    ownerRepo,
-                    openSummary.size(),
-                    String.join(", ", openSummary),
-                    processed, skippedUnchanged, skippedClosed, skippedDraft);
-        } catch (IOException e) {
+
+            log.info("Poll cycle {}: open={}, dispatched={}, unchanged={}, drafts={}",
+                    ownerRepo, prs.size(), processed, skippedUnchanged, skippedDraft);
+
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             log.warn("GitHub poll failed for {}: {}", ownerRepo, e.getMessage());
         }
     }
 
-    /** Fabricate the same DTO the webhook builds, so we reuse the pipeline verbatim. */
-    private static GithubPullRequestEvent toEvent(GHRepository repo, GHPullRequest pr) {
+    private static String runGhApi(String ownerRepo) throws IOException, InterruptedException {
+        String endpoint = "repos/" + ownerRepo + "/pulls?state=open&per_page=100";
+        ProcessBuilder pb = new ProcessBuilder("gh", "api", endpoint)
+                .redirectErrorStream(true);
+        // Use the token gh itself is configured with (keyring/oauth) rather than
+        // GITHUB_TOKEN from the environment, which may be a fine-grained PAT without
+        // sufficient repo access.
+        String ghToken = resolveGhToken();
+        if (ghToken != null) {
+            pb.environment().put("GH_TOKEN", ghToken);
+            pb.environment().remove("GITHUB_TOKEN");
+        }
+        Process process = pb.start();
+        String output = new String(process.getInputStream().readAllBytes());
+        int exit = process.waitFor();
+        if (exit != 0) {
+            throw new IOException("gh api exited " + exit + ": " + output.trim());
+        }
+        return output;
+    }
+
+    private static String resolveGhToken() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("gh", "auth", "token")
+                    .redirectErrorStream(true);
+            // gh auth token echoes GITHUB_TOKEN if set — remove it so we get
+            // the real keyring/oauth token instead of the env var.
+            pb.environment().remove("GITHUB_TOKEN");
+            Process p = pb.start();
+            String token = new String(p.getInputStream().readAllBytes()).trim();
+            p.waitFor();
+            return token.isBlank() ? null : token;
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            return null;
+        }
+    }
+
+    private static GithubPullRequestEvent toEvent(JsonNode pr) {
+        String repoFullName = pr.path("repo_full_name").asText(
+                pr.at("/base/repo/full_name").asText());
+        String cloneUrl = pr.path("clone_url").asText(
+                pr.at("/base/repo/clone_url").asText());
         return new GithubPullRequestEvent(
                 "synchronize",
-                new GithubPullRequestEvent.Repository(
-                        repo.getFullName(),
-                        repo.getHttpTransportUrl()   // "https://github.com/owner/repo.git"
-                ),
+                new GithubPullRequestEvent.Repository(repoFullName, cloneUrl),
                 new GithubPullRequestEvent.PullRequest(
-                        pr.getNumber(),
-                        new GithubPullRequestEvent.Ref(pr.getBase().getSha()),
-                        new GithubPullRequestEvent.Ref(pr.getHead().getSha())
+                        pr.path("number").asInt(),
+                        new GithubPullRequestEvent.Ref(pr.path("base_sha").asText(
+                                pr.at("/base/sha").asText())),
+                        new GithubPullRequestEvent.Ref(pr.path("head_sha").asText(
+                                pr.at("/head/sha").asText()))
                 )
         );
     }
 }
-

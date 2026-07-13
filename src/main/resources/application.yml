@@ -30,8 +30,8 @@ guardian:
   github-webhook-secret: ${GITHUB_WEBHOOK_SECRET:}
   # Default repo used by POST /ingest/repo when repo_url / repo_name are omitted.
   # Override at runtime with GITHUB_REPO_URL / GITHUB_REPO_NAME env vars.
-  github-repo-url:  ${GITHUB_REPO_URL:https://github.com/softwarepravin2007}
-  github-repo-name: ${GITHUB_REPO_NAME:generateautocode}
+  github-repo-url:  ${GITHUB_REPO_URL:https://github.com/kshetty-ias/macro-mapping-manager-service}
+  github-repo-name: ${GITHUB_REPO_NAME:macro-mapping-manager-service}
   # ---- GitHub PR polling (no webhook / no public URL needed) ------------
   # Set GITHUB_POLL_ENABLED=true to have the app poll api.github.com for
   # open pull requests on github-repo-url and process them like webhooks.

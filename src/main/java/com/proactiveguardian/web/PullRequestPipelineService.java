@@ -58,7 +58,7 @@ public class PullRequestPipelineService {
         String repoName = payload.repository().fullName();
         String cloneUrl = payload.repository().cloneUrl().replace(
                 "https://",
-                "https://x-access-token:" + (props.githubToken() == null ? "" : props.githubToken()) + "@"
+                "https://x-access-token:" + resolveGitToken() + "@"
         );
         int prNumber = payload.pullRequest().number();
         String baseSha = payload.pullRequest().base().sha();
@@ -178,6 +178,22 @@ public class PullRequestPipelineService {
 
     private static String shortSha(String sha) {
         return sha == null ? "?" : sha.substring(0, Math.min(7, sha.length()));
+    }
+
+    /** Returns the gh OAuth token, falling back to the configured PAT. */
+    private String resolveGitToken() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("gh", "auth", "token")
+                    .redirectErrorStream(true);
+            pb.environment().remove("GITHUB_TOKEN");
+            Process p = pb.start();
+            String token = new String(p.getInputStream().readAllBytes()).trim();
+            p.waitFor();
+            if (!token.isBlank()) return token;
+        } catch (Exception e) {
+            log.debug("gh auth token failed, falling back to configured token: {}", e.getMessage());
+        }
+        return props.githubToken() == null ? "" : props.githubToken();
     }
 
     private static void deleteRecursively(Path root) {
