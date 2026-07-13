@@ -53,7 +53,7 @@ public class PullRequestController {
                     "owner_repo not supplied and guardian.github-repo-url is not a github.com URL");
         }
 
-        String token = props.githubToken();
+        String token = resolveGhToken();
         GitHub gh = (token == null || token.isBlank())
                 ? GitHub.connectAnonymously()
                 : new GitHubBuilder().withOAuthToken(token).build();
@@ -72,7 +72,7 @@ public class PullRequestController {
         );
 
         log.info("Manual analyze dispatch for {}#{}", ownerRepo, number);
-        pipeline.process(evt);   // @Async — returns immediately
+        pipeline.process(evt);  // @Async — returns immediately
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("ok", true);
@@ -82,6 +82,21 @@ public class PullRequestController {
         out.put("head_sha", pr.getHead().getSha());
         out.put("dispatched", true);
         return out;
+    }
+
+    private static String resolveGhToken() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("gh", "auth", "token")
+                    .redirectErrorStream(true);
+            pb.environment().remove("GITHUB_TOKEN");
+            Process p = pb.start();
+            String token = new String(p.getInputStream().readAllBytes()).trim();
+            p.waitFor();
+            if (!token.isBlank()) return token;
+        } catch (Exception e) {
+            log.debug("gh auth token unavailable: {}", e.getMessage());
+        }
+        return "";
     }
 }
 

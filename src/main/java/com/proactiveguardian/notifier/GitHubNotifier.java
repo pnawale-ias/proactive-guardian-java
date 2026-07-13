@@ -42,9 +42,7 @@ public class GitHubNotifier {
     public GitHubNotifier(GuardianProperties props) {
         GitHub instance;
         try {
-            instance = new GitHubBuilder().withOAuthToken(
-                    props.githubToken() == null ? "" : props.githubToken()
-            ).build();
+            instance = new GitHubBuilder().withOAuthToken(resolveToken(props)).build();
         } catch (IOException e) {
             log.warn("GitHub client init failed, falling back to anonymous: {}", e.getMessage());
             try {
@@ -54,6 +52,21 @@ public class GitHubNotifier {
             }
         }
         this.gh = instance;
+    }
+
+    private static String resolveToken(GuardianProperties props) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("gh", "auth", "token")
+                    .redirectErrorStream(true);
+            pb.environment().remove("GITHUB_TOKEN");
+            Process p = pb.start();
+            String token = new String(p.getInputStream().readAllBytes()).trim();
+            p.waitFor();
+            if (!token.isBlank()) return token;
+        } catch (Exception e) {
+            log.debug("gh auth token unavailable, falling back to configured token: {}", e.getMessage());
+        }
+        return props.githubToken() == null ? "" : props.githubToken();
     }
 
     public void postPrComment(String repoFullName, int prNumber, List<Finding> findings) {
@@ -116,20 +129,19 @@ public class GitHubNotifier {
 
     String render(List<Finding> findings) {
         StringBuilder sb = new StringBuilder("## 🛡️ Proactive Guardian Report\n\n");
-        findings.stream()
+        List<Finding> sorted = findings.stream()
                 .sorted(Comparator.comparingDouble(Finding::confidence).reversed())
-                .forEach(f -> {
-                    String emoji = SEV_EMOJI.getOrDefault(f.severity(), "•");
-                    sb.append("### ").append(emoji).append(' ').append(f.title()).append('\n')
-                      .append("**Category:** `").append(f.category()).append("` · ")
-                      .append("**Confidence:** ").append(Math.round(f.confidence() * 100)).append("%\n\n")
-                      .append(f.detail() == null ? "" : f.detail()).append('\n');
-                    if (f.evidence() != null && !f.evidence().isEmpty()) {
-                        sb.append("\n**Evidence:**\n");
-                        for (String e : f.evidence()) sb.append("- ").append(e).append('\n');
-                    }
-                    sb.append('\n');
-                });
+                .toList();
+        for (int i = 0; i < sorted.size(); i++) {
+            Finding f = sorted.get(i);
+            String emoji = SEV_EMOJI.getOrDefault(f.severity(), "•");
+            sb.append("### ").append(emoji).append(' ').append(f.title()).append('\n')
+              .append("**Category:** `").append(f.category()).append("` · ")
+              .append("**Confidence:** ").append(Math.round(f.confidence() * 100)).append("%\n\n")
+              .append(f.detail() == null ? "" : f.detail()).append('\n');
+            if (i < sorted.size() - 1) sb.append("\n---\n");
+            sb.append('\n');
+        }
         return sb.toString();
     }
 }
