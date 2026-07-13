@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Project-local Maven settings for Proactive Guardian.
+  Why this file exists:
+    The developer's global ~/.m2/settings.xml pins <mirrorOf>*</mirrorOf> at an
+    internal corporate Nexus that is not reachable from every network. That
+    makes plain `mvn` / `./mvnw` fail with "nodename nor servname provided" the
+    moment any artifact is missing from the local cache.
+  What it does:
+    - No <mirrors> block => Maven talks directly to the repositories declared
+      here and in pom.xml.
+    - Reuses the default local repository (~/.m2/repository) so cached
+      artifacts from previous on-VPN builds are still used.
+  How it is picked up:
+    .mvn/maven.config passes `-s .mvn/settings.xml` on every invocation.
+    (Both `mvn` and `./mvnw` honour .mvn/maven.config.)
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0
+                              https://maven.apache.org/xsd/settings-1.2.0.xsd">
+    <profiles>
+        <profile>
+            <id>public-repos</id>
+            <repositories>
+                <repository>
+                    <id>central</id>
+                    <name>Maven Central</name>
+                    <url>https://repo.maven.apache.org/maven2</url>
+                    <releases><enabled>true</enabled></releases>
+                    <snapshots><enabled>false</enabled></snapshots>
+                </repository>
+                <repository>
+                    <id>spring-milestones</id>
+                    <name>Spring Milestones</name>
+                    <url>https://repo.spring.io/milestone</url>
+                    <releases><enabled>true</enabled></releases>
+                    <snapshots><enabled>false</enabled></snapshots>
+                </repository>
+            </repositories>
+            <pluginRepositories>
+                <pluginRepository>
+                    <id>central</id>
+                    <name>Maven Central</name>
+                    <url>https://repo.maven.apache.org/maven2</url>
+                    <releases><enabled>true</enabled></releases>
+                    <snapshots><enabled>false</enabled></snapshots>
+                </pluginRepository>
+                <pluginRepository>
+                    <id>spring-milestones</id>
+                    <name>Spring Milestones</name>
+                    <url>https://repo.spring.io/milestone</url>
+                    <releases><enabled>true</enabled></releases>
+                    <snapshots><enabled>false</enabled></snapshots>
+                </pluginRepository>
+            </pluginRepositories>
+        </profile>
+    </profiles>
+    <activeProfiles>
+        <activeProfile>public-repos</activeProfile>
+    </activeProfiles>
+</settings>
