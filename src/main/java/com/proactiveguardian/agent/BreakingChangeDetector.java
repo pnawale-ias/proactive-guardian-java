@@ -409,7 +409,7 @@ public class BreakingChangeDetector {
      * schemas, and config files instead of silently returning zero findings.
      */
     public List<Finding> addedFinding(Artifact after) {
-        String where = after.path() != null ? after.path()
+        String where = after.path() != null ? PathUtils.repoRelative(after.path())
                 : (after.repo() != null ? after.repo() : "?");
         String lang = after.language() == null ? "unknown" : after.language();
         String preview = after.content() == null ? "" : after.content();
@@ -1253,7 +1253,7 @@ public class BreakingChangeDetector {
             for (PredictedConsumer pc : v.breakers()) {
                 if (shown++ >= 5) { detail.append("\n- … (").append(v.breakers().size() - 5).append(" more)"); break; }
                 detail.append("\n- `").append(nullSafe(pc.repo()))
-                      .append("::").append(nullSafe(pc.path())).append("` ")
+                      .append("::").append(PathUtils.repoRelative(pc.path())).append("` ")
                       .append("(conf ").append(String.format("%.2f", pc.confidence())).append(") — ")
                       .append(nullSafe(pc.reason()));
             }
@@ -1269,14 +1269,14 @@ public class BreakingChangeDetector {
         if (v != null) {
             for (PredictedConsumer pc : v.breakers()) {
                 out.add(String.format("%s::%s::%s",
-                        nullSafe(pc.repo()), nullSafe(pc.path()), nullSafe(pc.name())));
+                        nullSafe(pc.repo()), PathUtils.repoRelative(pc.path()), nullSafe(pc.name())));
                 if (out.size() == 10) return List.copyOf(out);
             }
         }
         for (Map<String, Object> c : consumers) {
             out.add(String.format("%s::%s::%s",
                     c.getOrDefault("repo", "?"),
-                    c.getOrDefault("path", "?"),
+                    PathUtils.repoRelative((String) c.getOrDefault("path", "?")),
                     c.getOrDefault("name", "?")));
             if (out.size() == 10) break;
         }

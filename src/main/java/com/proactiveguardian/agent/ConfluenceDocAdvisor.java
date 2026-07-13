@@ -138,7 +138,7 @@ public class ConfluenceDocAdvisor {
         for (GitIngester.Pair p : pairs) {
             Artifact a = p.after() != null ? p.after() : p.before();
             if (a == null) continue;
-            String label = a.path() != null ? shortPath(a.path())
+            String label = a.path() != null ? PathUtils.repoRelative(a.path())
                          : a.name() != null ? a.name()
                          : a.id();
             if (label != null && !label.isBlank()) out.add("`" + label + "`");
@@ -259,21 +259,11 @@ public class ConfluenceDocAdvisor {
             hay.contains("openapi")      || hay.contains("swagger")       ||
             hay.contains("/api/")        || hay.endsWith(".proto")) {
             String label = a.path() != null ? a.path() : (a.name() != null ? a.name() : a.id());
-            return "`" + shortPath(label) + "`";
+            return "`" + PathUtils.repoRelative(label) + "`";
         }
         return null;
     }
 
-    private static String shortPath(String p) {
-        if (p == null) return "?";
-        String s = p.replace('\\', '/');
-        int i = s.indexOf("/guardian-ingest-");
-        if (i >= 0) {
-            int slash = s.indexOf('/', i + "/guardian-ingest-".length());
-            if (slash > 0 && slash + 1 < s.length()) return s.substring(slash + 1);
-        }
-        return s;
-    }
 
     // ------------------------------------------------------------------
     // Token extraction

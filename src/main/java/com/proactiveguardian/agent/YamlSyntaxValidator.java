@@ -181,15 +181,7 @@ public class YamlSyntaxValidator {
     }
 
     private static String shortPath(String path) {
-        if (path == null) return "?";
-        // Strip tmp-dir noise: keep only from the last /src/ or /.github/ etc.
-        for (String marker : new String[]{"/src/", "/.github/", "/k8s/", "/kubernetes/",
-                "/helm/", "/charts/", "/manifests/", "/config/", "/deploy/"}) {
-            int i = path.lastIndexOf(marker);
-            if (i >= 0) return path.substring(i + 1);
-        }
-        int slash = path.lastIndexOf('/');
-        return slash < 0 ? path : path.substring(slash + 1);
+        return PathUtils.repoRelative(path);
     }
 
     private static String safe(String s) {

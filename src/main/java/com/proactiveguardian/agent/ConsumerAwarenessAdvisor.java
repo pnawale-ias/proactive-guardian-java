@@ -233,20 +233,8 @@ public class ConsumerAwarenessAdvisor {
         }
     }
 
-    /** Strip local tmp-dir prefixes like {@code /var/folders/.../guardian-ingest-xxxx/}. */
     private static String repoRelative(String path) {
-        if (path == null) return "?";
-        String p = path.replace('\\', '/');
-        int i = p.indexOf("/guardian-ingest-");
-        if (i >= 0) {
-            int slash = p.indexOf('/', i + "/guardian-ingest-".length());
-            if (slash > 0 && slash + 1 < p.length()) return p.substring(slash + 1);
-        }
-        for (String marker : new String[]{"/src/", "/.github/", "/k8s/", "/helm/", "/charts/", "/deploy/"}) {
-            int j = p.lastIndexOf(marker);
-            if (j >= 0) return p.substring(j + 1);
-        }
-        return p;
+        return PathUtils.repoRelative(path);
     }
 
     private static String shortRepo(String repo) {
