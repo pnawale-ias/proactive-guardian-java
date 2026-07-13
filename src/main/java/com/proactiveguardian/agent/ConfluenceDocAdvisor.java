@@ -40,6 +40,8 @@ public class ConfluenceDocAdvisor {
     private static final int PER_TOKEN_CAP = 50;
     /** Skip tokens shorter than this to avoid matching everything (`id`, `dto`, …). */
     private static final int MIN_TOKEN_LEN = 4;
+    /** Max pages to surface in the finding — sort by token-match count desc before truncating. */
+    private static final int MAX_PAGES = 5;
 
     /** Very common English/tech words we never want to trigger on. */
     private static final Set<String> STOPWORDS = Set.of(
@@ -149,11 +151,18 @@ public class ConfluenceDocAdvisor {
     // ------------------------------------------------------------------
 
     private static Finding buildUpdateFinding(Map<String, PageMatch> byPage) {
+        // Sort by descending token-match count so the most relevant pages come first.
+        List<PageMatch> sorted = byPage.values().stream()
+                .sorted((a, b) -> Integer.compare(b.tokens.size(), a.tokens.size()))
+                .toList();
+        List<PageMatch> shown = sorted.subList(0, Math.min(sorted.size(), MAX_PAGES));
+        int hidden = sorted.size() - shown.size();
+
         StringBuilder detail = new StringBuilder();
         detail.append("The following Confluence page(s) in the knowledge base mention identifiers ")
               .append("changed in this PR. They may need to be **updated** (or confirmed still accurate):\n\n");
         List<String> evidence = new ArrayList<>();
-        for (PageMatch pm : byPage.values()) {
+        for (PageMatch pm : shown) {
             String linkText = pm.title != null && !pm.title.isBlank() ? pm.title : "(untitled page)";
             if (pm.url != null && !pm.url.isBlank()) {
                 detail.append("- [").append(linkText).append("](").append(pm.url).append(")");
@@ -169,6 +178,9 @@ public class ConfluenceDocAdvisor {
                 detail.append("`").append(t).append("`");
             }
             detail.append('\n');
+        }
+        if (hidden > 0) {
+            detail.append("- _…and ").append(hidden).append(" more_\n");
         }
         detail.append("\n_Tip: if the page is stale, update it in the same PR (or open a follow-up) ")
               .append("to keep documentation and code in sync._");
@@ -284,15 +296,27 @@ public class ConfluenceDocAdvisor {
         }
     }
 
-    /** Add an identifier plus its camelCase parts (best-effort). */
+    /**
+     * Add an identifier as a whole, plus its space-joined camelCase phrase form.
+     * e.g. "UserRequest" → {"UserRequest", "User Request"}
+     * The phrase form lets scanReferences match natural-language Confluence content
+     * without re-introducing individual word tokens that cause noise.
+     */
     private static void addIdentifier(String id, Set<String> out) {
         if (id == null) return;
         String s = id.trim();
         if (s.isEmpty()) return;
         out.add(s);
-        // Split camelCase / PascalCase / snake_case / kebab-case into parts.
-        for (String part : s.split("(?<=[a-z0-9])(?=[A-Z])|[_\\-\\s\\.]+")) {
-            if (!part.isBlank()) out.add(part);
+        // Space-joined phrase (only when every part clears MIN_TOKEN_LEN, to avoid
+        // noisy short-word phrases like "get Email" from "getEmail").
+        String[] parts = s.split("(?<=[a-z0-9])(?=[A-Z])|[_\\-\\s\\.]+");
+        if (parts.length > 1) {
+            boolean allLongEnough = java.util.Arrays.stream(parts)
+                    .allMatch(p -> p.length() >= MIN_TOKEN_LEN);
+            if (allLongEnough) {
+                String phrase = String.join(" ", parts);
+                if (!phrase.equals(s)) out.add(phrase);
+            }
         }
     }
 
