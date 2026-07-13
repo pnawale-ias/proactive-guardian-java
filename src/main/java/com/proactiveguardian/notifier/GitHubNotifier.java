@@ -116,20 +116,19 @@ public class GitHubNotifier {
 
     String render(List<Finding> findings) {
         StringBuilder sb = new StringBuilder("## 🛡️ Proactive Guardian Report\n\n");
-        findings.stream()
+        List<Finding> sorted = findings.stream()
                 .sorted(Comparator.comparingDouble(Finding::confidence).reversed())
-                .forEach(f -> {
-                    String emoji = SEV_EMOJI.getOrDefault(f.severity(), "•");
-                    sb.append("### ").append(emoji).append(' ').append(f.title()).append('\n')
-                      .append("**Category:** `").append(f.category()).append("` · ")
-                      .append("**Confidence:** ").append(Math.round(f.confidence() * 100)).append("%\n\n")
-                      .append(f.detail() == null ? "" : f.detail()).append('\n');
-                    if (f.evidence() != null && !f.evidence().isEmpty()) {
-                        sb.append("\n**Evidence:**\n");
-                        for (String e : f.evidence()) sb.append("- ").append(e).append('\n');
-                    }
-                    sb.append('\n');
-                });
+                .toList();
+        for (int i = 0; i < sorted.size(); i++) {
+            Finding f = sorted.get(i);
+            String emoji = SEV_EMOJI.getOrDefault(f.severity(), "•");
+            sb.append("### ").append(emoji).append(' ').append(f.title()).append('\n')
+              .append("**Category:** `").append(f.category()).append("` · ")
+              .append("**Confidence:** ").append(Math.round(f.confidence() * 100)).append("%\n\n")
+              .append(f.detail() == null ? "" : f.detail()).append('\n');
+            if (i < sorted.size() - 1) sb.append("\n---\n");
+            sb.append('\n');
+        }
         return sb.toString();
     }
 }
