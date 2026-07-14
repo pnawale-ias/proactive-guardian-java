@@ -41,6 +41,13 @@ guardian:
   github-poll-enabled:      ${GITHUB_POLL_ENABLED:false}
   github-poll-interval-ms:  ${GITHUB_POLL_INTERVAL_MS:60000}
 
+  # ---- SQS (cross-account GitHub events) --------------------------------
+  sqs-enabled:           ${SQS_ENABLED:true}
+  sqs-queue-url:         ${SQS_QUEUE_URL:}
+  sqs-region:            ${AWS_REGION:us-east-1}
+  sqs-role-arn:          ${SQS_ROLE_ARN:}
+  sqs-role-session-name: ${SQS_ROLE_SESSION_NAME:proactive-guardian}
+
   # ---- Confluence --------------------------------------------------------
   confluence-base-url: ${CONFLUENCE_BASE_URL:}
   confluence-user: ${CONFLUENCE_USER:}
