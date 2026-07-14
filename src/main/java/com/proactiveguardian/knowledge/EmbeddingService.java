@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -33,9 +34,16 @@ public class EmbeddingService {
      * Returns one dense vector per input text. The dimension matches whatever
      * model Spring AI is configured with (3072 for {@code text-embedding-3-large}).
      */
+    private static final int BATCH_SIZE = 100;
+
     public List<float[]> embed(List<String> texts) {
         if (texts == null || texts.isEmpty()) return List.of();
-        return embeddingModel.embed(texts);
+        if (texts.size() <= BATCH_SIZE) return embeddingModel.embed(texts);
+        List<float[]> result = new ArrayList<>(texts.size());
+        for (int i = 0; i < texts.size(); i += BATCH_SIZE) {
+            result.addAll(embeddingModel.embed(texts.subList(i, Math.min(i + BATCH_SIZE, texts.size()))));
+        }
+        return result;
     }
 
     public float[] embedOne(String text) {

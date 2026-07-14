@@ -90,7 +90,8 @@ public class AiProfileSelector implements EnvironmentPostProcessor, ApplicationL
                 + ", DATABRICKS_HOST=" + (isBlank(dbxHost) ? "<missing>" : dbxHost)
                 + ", DATABRICKS_TOKEN=" + (isBlank(dbxToken) ? "<missing>" : "<set>")
                 + ", SPRING_AI_OPENAI_BASE_URL=" + (isBlank(baseUrl) ? "<missing>" : baseUrl)
-                + ", GUARDIAN_AI_PROVIDER=" + env.getProperty("GUARDIAN_AI_PROVIDER"));
+                + ", GUARDIAN_AI_PROVIDER=" + env.getProperty("GUARDIAN_AI_PROVIDER")
+                + ", GUARDIAN_EMBEDDING_PROVIDER=" + env.getProperty("GUARDIAN_EMBEDDING_PROVIDER"));
 
         // ---- 1. explicit override ----------------------------------------
         String forced = firstNonBlank(env.getProperty("GUARDIAN_AI_PROVIDER"),
@@ -169,8 +170,9 @@ public class AiProfileSelector implements EnvironmentPostProcessor, ApplicationL
         String embeddingModel = firstNonBlank(env.getProperty("DATABRICKS_EMBEDDING_MODEL"),
                                               env.getProperty("guardian.databricks.embedding-model"),
                                               DBX_DEFAULT_EMBEDDING_MODEL);
+        boolean splitEmbedding = isSplitEmbedding(env);
         String summary = "Using Databricks Model Serving at " + base
-                + " (chat=" + chatModel + ", embedding=" + embeddingModel + ")";
+                + " (chat=" + chatModel + ", embedding=" + (splitEmbedding ? "ollama/local" : embeddingModel) + ")";
         announce(summary);
         Map<String, Object> overrides = new LinkedHashMap<>();
         overrides.put("guardian.openai-api-key",           token);
@@ -178,33 +180,31 @@ public class AiProfileSelector implements EnvironmentPostProcessor, ApplicationL
         overrides.put("spring.ai.openai.base-url",         base);
         overrides.put("spring.ai.openai.chat.options.model",       chatModel);
         overrides.put("spring.ai.openai.embedding.options.model",  embeddingModel);
-        // Force Spring AI's model-provider selector to OpenAI (Databricks uses
-        // the OpenAI-compatible adapter). Without this, a stray
-        // SPRING_AI_MODEL_CHAT=ollama env var (or an active 'local' profile)
-        // would cause OllamaChatModel to be wired into BreakingChangeDetector.
         overrides.put("spring.ai.model.chat",              "openai");
-        overrides.put("spring.ai.model.embedding",         "openai");
+        overrides.put("spring.ai.model.embedding",         splitEmbedding ? "ollama" : "openai");
         overrides.put("guardian.ai-provider.resolved",     "databricks");
         overrides.put("guardian.ai-provider.summary",      summary);
         env.getPropertySources().addFirst(
                 new MapPropertySource("aiProfileSelectorOverrides", overrides));
-        removeLocalProfile(env, "databricks");
+        if (!splitEmbedding) removeLocalProfile(env, "databricks");
     }
 
     private static void applyCustomOpenAiCompatible(ConfigurableEnvironment env, String baseUrl) {
+        boolean splitEmbedding = isSplitEmbedding(env);
         String summary = "No OPENAI_API_KEY but SPRING_AI_OPENAI_BASE_URL='" + baseUrl
-                + "' is set — using OpenAI adapter against that endpoint with a dummy key.";
+                + "' is set — using OpenAI adapter against that endpoint with a dummy key."
+                + (splitEmbedding ? " Embeddings → Ollama." : "");
         announce(summary);
         Map<String, Object> overrides = new LinkedHashMap<>();
         overrides.put("guardian.openai-api-key",  DUMMY_KEY);
         overrides.put("spring.ai.openai.api-key", DUMMY_KEY);
         overrides.put("spring.ai.model.chat",      "openai");
-        overrides.put("spring.ai.model.embedding", "openai");
+        overrides.put("spring.ai.model.embedding", splitEmbedding ? "ollama" : "openai");
         overrides.put("guardian.ai-provider.resolved", "custom");
         overrides.put("guardian.ai-provider.summary",  summary);
         env.getPropertySources().addFirst(
                 new MapPropertySource("aiProfileSelectorOverrides", overrides));
-        removeLocalProfile(env, "custom");
+        if (!splitEmbedding) removeLocalProfile(env, "custom");
     }
 
     /**
@@ -257,6 +257,14 @@ public class AiProfileSelector implements EnvironmentPostProcessor, ApplicationL
         System.out.println("[AiProfileSelector] " + msg);
     }
 
+
+    private static boolean isSplitEmbedding(ConfigurableEnvironment env) {
+        String v = firstNonBlank(env.getProperty("GUARDIAN_EMBEDDING_PROVIDER"),
+                                 env.getProperty("guardian.embedding-provider"));
+        // Default to local Ollama for embeddings when using a remote chat provider.
+        // Override with GUARDIAN_EMBEDDING_PROVIDER=remote to use the same remote backend.
+        return !"remote".equalsIgnoreCase(v);
+    }
 
     private static String firstNonBlank(String... values) {
         if (values == null) return null;
