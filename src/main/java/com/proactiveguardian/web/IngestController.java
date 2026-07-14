@@ -125,6 +125,7 @@ public class IngestController {
             log.warn("Confluence ingester not enabled (set guardian.confluence.enabled=true)");
             return Map.of("ok", false, "reason", "confluence disabled");
         }
+        log.info("Ingesting Confluence space={} embeddingModel={}", spaceKey, props.embeddingModel());
         ci.ingestSpace(spaceKey);
         return Map.of("ok", true);
     }
