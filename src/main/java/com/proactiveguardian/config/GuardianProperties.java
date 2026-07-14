@@ -28,6 +28,12 @@ public record GuardianProperties(
         Boolean githubPollEnabled,
         Long githubPollIntervalMs,
 
+        Boolean sqsEnabled,
+        String sqsQueueUrl,
+        String sqsRegion,
+        String sqsRoleArn,
+        String sqsRoleSessionName,
+
         String confluenceBaseUrl,
         String confluenceUser,
         String confluenceToken,
@@ -63,6 +69,10 @@ public record GuardianProperties(
 
         if (githubPollEnabled == null)   githubPollEnabled = Boolean.FALSE;
         if (githubPollIntervalMs == null || githubPollIntervalMs <= 0) githubPollIntervalMs = 60_000L;
+
+        if (sqsEnabled == null) sqsEnabled = Boolean.FALSE;
+        if (sqsRegion == null || sqsRegion.isBlank()) sqsRegion = "us-east-1";
+        if (sqsRoleSessionName == null || sqsRoleSessionName.isBlank()) sqsRoleSessionName = "proactive-guardian";
     }
 
     /**
