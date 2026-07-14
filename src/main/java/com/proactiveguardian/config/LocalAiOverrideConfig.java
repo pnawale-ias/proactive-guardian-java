@@ -7,10 +7,10 @@ import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.ollama.OllamaEmbeddingModel;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
-import org.springframework.context.annotation.Profile;
 
 /**
  * Force Spring AI to use the Ollama beans (chat + embedding) whenever the
@@ -24,18 +24,18 @@ import org.springframework.context.annotation.Profile;
  * because both {@code OpenAiEmbeddingModel} and {@code OllamaEmbeddingModel} beans
  * existed and OpenAI won the primary tie-breaker.</p>
  *
- * <p>Activated only under the {@code local} profile (chosen automatically by
- * {@link AiProfileSelector} when {@code OPENAI_API_KEY} is missing). When you
- * later set a real key, the profile is dropped and this override goes away.</p>
+ * <p>Each bean is guarded independently by {@code @ConditionalOnProperty} so
+ * Ollama can be used for just embeddings (split-provider mode) while chat uses
+ * a different backend, or for both when the {@code local} profile is active.</p>
  */
 @Configuration
-@Profile("local")
 public class LocalAiOverrideConfig {
 
     private static final Logger log = LoggerFactory.getLogger(LocalAiOverrideConfig.class);
 
     @Bean
     @Primary
+    @ConditionalOnProperty(name = "spring.ai.model.embedding", havingValue = "ollama")
     public EmbeddingModel guardianPrimaryEmbeddingModel(ObjectProvider<OllamaEmbeddingModel> ollama) {
         OllamaEmbeddingModel model = ollama.getIfAvailable();
         if (model == null) {
@@ -50,6 +50,7 @@ public class LocalAiOverrideConfig {
 
     @Bean
     @Primary
+    @ConditionalOnProperty(name = "spring.ai.model.chat", havingValue = "ollama")
     public ChatModel guardianPrimaryChatModel(ObjectProvider<OllamaChatModel> ollama) {
         OllamaChatModel model = ollama.getIfAvailable();
         if (model == null) {

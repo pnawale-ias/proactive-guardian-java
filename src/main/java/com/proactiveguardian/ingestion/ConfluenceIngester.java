@@ -75,6 +75,7 @@ public class ConfluenceIngester {
         meta.put("page_id", pageId);
         meta.put("version", version);
 
+        log.info("Ingesting page title=\"{}\" url={}", title, props.confluenceBaseUrl() + "/wiki" + webui);
         Artifact art = new Artifact(
                 pid, ArtifactType.CONFLUENCE_PAGE, title, body,
                 null, null, null,
