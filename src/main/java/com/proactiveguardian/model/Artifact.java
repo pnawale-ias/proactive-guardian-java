@@ -28,5 +28,9 @@ public record Artifact(
     public static Artifact of(String id, ArtifactType type, String name, String content) {
         return new Artifact(id, type, name, content, null, null, null, null, Map.of(), Instant.now());
     }
+
+    public Artifact withUrl(String newUrl) {
+        return new Artifact(id, type, name, content, language, repo, path, newUrl, metadata, updatedAt);
+    }
 }
 

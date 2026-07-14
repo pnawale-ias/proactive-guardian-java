@@ -2,6 +2,7 @@ package com.proactiveguardian.agent;
 
 import com.proactiveguardian.model.Artifact;
 import com.proactiveguardian.model.Finding;
+import com.proactiveguardian.model.PrContext;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -10,10 +11,15 @@ import java.util.List;
  * Immutable-ish state carried through the {@link GuardianOrchestrator} pipeline.
  * Replaces LangGraph's {@code TypedDict}.
  */
-public record GuardianState(Artifact before, Artifact after, List<Finding> findings) {
+public record GuardianState(Artifact before, Artifact after, List<Finding> findings, PrContext prContext) {
+
+    public GuardianState(Artifact before, Artifact after, List<Finding> findings) {
+        this(before, after, findings, PrContext.empty());
+    }
 
     public GuardianState {
         if (findings == null) findings = List.of();
+        if (prContext == null) prContext = PrContext.empty();
     }
 
     /** Return a new state with the given findings appended. */
@@ -22,7 +28,7 @@ public record GuardianState(Artifact before, Artifact after, List<Finding> findi
         List<Finding> merged = new ArrayList<>(findings.size() + extra.size());
         merged.addAll(findings);
         merged.addAll(extra);
-        return new GuardianState(before, after, List.copyOf(merged));
+        return new GuardianState(before, after, List.copyOf(merged), prContext);
     }
 
     /** True when either side of the change is a data-plane artifact. */

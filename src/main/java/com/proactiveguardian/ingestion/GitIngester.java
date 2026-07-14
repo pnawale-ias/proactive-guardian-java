@@ -134,9 +134,11 @@ public class GitIngester {
         return changed;
     }
 
-    public List<Pair> diffChangedPairs(Path localPath, String repoName,
+    public DiffResult diffChangedPairs(Path localPath, String repoName,
                                        String baseSha, String headSha) {
         List<Pair> pairs = new ArrayList<>();
+        String fileSummary = "";
+        String commitMessage = "";
         try (Git git = Git.open(localPath.toFile());
              Repository repo = git.getRepository()) {
 
@@ -148,6 +150,22 @@ public class GitIngester {
                         + "(fork PR? shallow clone? wrong SHA?)");
             }
 
+            // Build compact file summary from diff entries (capped to avoid bloat)
+            StringBuilder summaryBuf = new StringBuilder();
+            for (DiffEntry d : entries) {
+                if (summaryBuf.length() > 280) { summaryBuf.append(", …"); break; }
+                if (summaryBuf.length() > 0) summaryBuf.append(", ");
+                String p = d.getNewPath() != null && !DiffEntry.DEV_NULL.equals(d.getNewPath())
+                        ? d.getNewPath() : d.getOldPath();
+                summaryBuf.append(d.getChangeType().name(), 0, 1).append(' ').append(p);
+            }
+            fileSummary = summaryBuf.toString();
+
+            // Extract head commit short message
+            try (org.eclipse.jgit.revwalk.RevWalk rw = new org.eclipse.jgit.revwalk.RevWalk(repo)) {
+                commitMessage = rw.parseCommit(ObjectId.fromString(headSha)).getShortMessage();
+            } catch (Exception ignored) {}
+
             for (DiffEntry d : entries) {
                 String path = d.getNewPath() != null && !DiffEntry.DEV_NULL.equals(d.getNewPath())
                         ? d.getNewPath() : d.getOldPath();
@@ -156,7 +174,13 @@ public class GitIngester {
 
                 if (d.getNewPath() != null && !DiffEntry.DEV_NULL.equals(d.getNewPath())) {
                     Path p = localPath.resolve(d.getNewPath());
-                    if (Files.exists(p)) afterArts = codeParser.parseFile(p, repoName);
+                    if (Files.exists(p)) {
+                        List<Artifact> parsed = codeParser.parseFile(p, repoName);
+                        // Stamp blob URL on each after-artifact for source linking
+                        afterArts = parsed.stream()
+                                .map(a -> stampUrl(a, repoName, headSha, d.getNewPath()))
+                                .toList();
+                    }
                 }
                 if (d.getOldPath() != null && !DiffEntry.DEV_NULL.equals(d.getOldPath())) {
                     // Keep the base-blob for the lifetime of the PR temp dir so
@@ -197,8 +221,19 @@ public class GitIngester {
         } catch (Exception e) {
             log.warn("diffChangedPairs failed {}: {}", e.getClass().getSimpleName(), e.getMessage(), e);
         }
-        return pairs;
+        return new DiffResult(pairs, fileSummary, commitMessage);
     }
+
+    private static Artifact stampUrl(Artifact a, String repoName, String sha, String filePath) {
+        if (a.url() != null && !a.url().isBlank()) return a;
+        Object startLine = a.metadata().get("start_line");
+        int line = startLine instanceof Number n ? n.intValue() + 1 : 1;
+        String url = "https://github.com/" + repoName + "/blob/" + sha + "/" + filePath + "#L" + line;
+        return a.withUrl(url);
+    }
+
+    /** Result of {@link #diffChangedPairs}: pairs plus PR-level metadata. */
+    public record DiffResult(List<Pair> pairs, String fileSummary, String commitMessage) {}
 
     private static String shortSha(String sha) {
         return sha == null ? "?" : sha.substring(0, Math.min(7, sha.length()));

@@ -23,6 +23,7 @@ public record GithubPullRequestEvent(
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record PullRequest(
             int number,
+            String title,
             Ref base,
             Ref head
     ) {}

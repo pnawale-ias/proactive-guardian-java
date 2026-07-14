@@ -9,10 +9,16 @@ public record Finding(
         String title,
         String detail,
         List<String> evidence,
-        double confidence
+        double confidence,
+        String sourceUrl
 ) {
     public Finding {
         if (evidence == null) evidence = List.of();
+    }
+
+    public Finding(Severity severity, String category, String title,
+                   String detail, List<String> evidence, double confidence) {
+        this(severity, category, title, detail, evidence, confidence, null);
     }
 
     public static Finding info(String category, String title, String detail, double confidence) {

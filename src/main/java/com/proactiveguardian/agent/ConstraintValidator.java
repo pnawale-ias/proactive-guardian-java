@@ -6,6 +6,7 @@ import com.proactiveguardian.knowledge.VectorStore;
 import com.proactiveguardian.knowledge.VectorStore.Hit;
 import com.proactiveguardian.model.Artifact;
 import com.proactiveguardian.model.Finding;
+import com.proactiveguardian.model.PrContext;
 import com.proactiveguardian.model.Severity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,6 +58,10 @@ public class ConstraintValidator {
     }
 
     public List<Finding> check(Artifact artifact) {
+        return check(artifact, PrContext.empty());
+    }
+
+    public List<Finding> check(Artifact artifact, PrContext prCtx) {
         List<Hit> hits = vs.searchSimilar(artifact.content(), 8);
         List<Hit> constraints = hits.stream()
                 .filter(h -> {
@@ -79,7 +84,9 @@ public class ConstraintValidator {
 
         String userPrompt = promptTemplate
                 .replace("{code}", codeSnippet)
-                .replace("{constraints}", rendered.toString());
+                .replace("{constraints}", rendered.toString())
+                .replace("{pr_title}", prCtx.prTitle())
+                .replace("{commit_msg}", prCtx.commitMessage());
 
         Prompt prompt = new Prompt(List.of(
                 new SystemMessage("You output only valid JSON."),
@@ -120,11 +127,13 @@ public class ConstraintValidator {
             if (conf < 0.6) continue;
             String constraint = v.path("constraint").asText("");
             String reason = v.path("reason").asText("");
+            String fix = v.path("fix_suggestion").asText("");
+            String detail = fix.isBlank() ? reason : reason + "\n\n> 💡 **Suggested fix:** " + fix;
             findings.add(new Finding(
                     conf >= 0.85 ? Severity.BLOCK : Severity.WARN,
                     "constraint_violation",
                     "Violates: " + constraint.substring(0, Math.min(80, constraint.length())),
-                    reason,
+                    detail,
                     List.copyOf(evidence),
                     conf
             ));

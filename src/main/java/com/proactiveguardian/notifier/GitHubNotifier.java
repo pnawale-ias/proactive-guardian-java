@@ -128,18 +128,40 @@ public class GitHubNotifier {
     }
 
     String render(List<Finding> findings) {
-        StringBuilder sb = new StringBuilder("## 🛡️ Proactive Guardian Report\n\n");
-        List<Finding> sorted = findings.stream()
-                .sorted(Comparator.comparingDouble(Finding::confidence).reversed())
-                .toList();
-        for (int i = 0; i < sorted.size(); i++) {
-            Finding f = sorted.get(i);
-            String emoji = SEV_EMOJI.getOrDefault(f.severity(), "•");
-            sb.append("### ").append(emoji).append(' ').append(f.title()).append('\n')
-              .append("**Category:** `").append(f.category()).append("` · ")
-              .append("**Confidence:** ").append(Math.round(f.confidence() * 100)).append("%\n\n")
-              .append(f.detail() == null ? "" : f.detail()).append('\n');
-            if (i < sorted.size() - 1) sb.append("\n---\n");
+        long blocks = findings.stream().filter(f -> f.severity() == Severity.BLOCK).count();
+        long warns  = findings.stream().filter(f -> f.severity() == Severity.WARN).count();
+        long infos  = findings.stream().filter(f -> f.severity() == Severity.INFO).count();
+
+        StringBuilder sb = new StringBuilder("## 🛡️ Proactive Guardian Report\n");
+        sb.append("> ");
+        if (blocks > 0) sb.append("🚫 ").append(blocks).append(" blocking  ");
+        if (warns  > 0) sb.append("⚠️ ").append(warns).append(" warning  ");
+        if (infos  > 0) sb.append("ℹ️ ").append(infos).append(" info");
+        sb.append("\n\n");
+
+        for (Severity sev : List.of(Severity.BLOCK, Severity.WARN, Severity.INFO)) {
+            List<Finding> group = findings.stream()
+                    .filter(f -> f.severity() == sev)
+                    .sorted(Comparator.comparingDouble(Finding::confidence).reversed())
+                    .toList();
+            if (group.isEmpty()) continue;
+
+            String emoji = SEV_EMOJI.getOrDefault(sev, "•");
+            sb.append("### ").append(emoji).append(' ').append(sev.name()).append('\n');
+
+            for (Finding f : group) {
+                String titlePart = f.sourceUrl() != null && !f.sourceUrl().isBlank()
+                        ? "[" + f.title() + "](" + f.sourceUrl() + ")"
+                        : f.title();
+                sb.append("<details><summary><strong>").append(titlePart).append("</strong>")
+                  .append(" &nbsp;`").append(f.category()).append("`")
+                  .append(" &nbsp;").append(Math.round(f.confidence() * 100)).append("%")
+                  .append("</summary>\n\n");
+                if (f.detail() != null && !f.detail().isBlank()) {
+                    sb.append(f.detail()).append("\n\n");
+                }
+                sb.append("</details>\n");
+            }
             sb.append('\n');
         }
         return sb.toString();

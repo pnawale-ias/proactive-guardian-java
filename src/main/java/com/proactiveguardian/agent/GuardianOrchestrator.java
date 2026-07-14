@@ -2,6 +2,7 @@ package com.proactiveguardian.agent;
 
 import com.proactiveguardian.model.Artifact;
 import com.proactiveguardian.model.Finding;
+import com.proactiveguardian.model.PrContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -47,14 +48,18 @@ public class GuardianOrchestrator {
 
     // ---- Public entry points ----------------------------------------
     public List<Finding> analyze(Artifact artifact) {
-        return analyzeChange(null, artifact);
+        return analyzeChange(null, artifact, PrContext.empty());
     }
 
     public List<Finding> analyzeChange(Artifact before, Artifact after) {
+        return analyzeChange(before, after, PrContext.empty());
+    }
+
+    public List<Finding> analyzeChange(Artifact before, Artifact after, PrContext ctx) {
         long t0 = System.currentTimeMillis();
         log.info("analyzing pair before={} after={}", describe(before), describe(after));
 
-        GuardianState state = new GuardianState(before, after, List.of());
+        GuardianState state = new GuardianState(before, after, List.of(), ctx);
         state = runNode("yaml-syntax",       this::yamlSyntaxNode,       state);
         state = runNode("schema",            this::schemaNode,           state);
         state = runNode("breaking",          this::breakingNode,         state);
@@ -106,7 +111,7 @@ public class GuardianOrchestrator {
             return s.withMoreFindings(breakingChange.deletedFinding(s.before()));
         }
         if (s.after() == null) return s;
-        return s.withMoreFindings(breakingChange.check(s.before(), s.after()));
+        return s.withMoreFindings(breakingChange.check(s.before(), s.after(), s.prContext()));
     }
 
     private GuardianState duplicatesNode(GuardianState s) {
@@ -121,12 +126,12 @@ public class GuardianOrchestrator {
 
     private GuardianState constraintsNode(GuardianState s) {
         if (s.after() == null) return s;
-        return s.withMoreFindings(constraints.check(s.after()));
+        return s.withMoreFindings(constraints.check(s.after(), s.prContext()));
     }
 
     private GuardianState schemaContractNode(GuardianState s) {
         if (s.after() == null) return s;
-        return s.withMoreFindings(schemaContract.check(s.before(), s.after()));
+        return s.withMoreFindings(schemaContract.check(s.before(), s.after(), s.prContext()));
     }
 }
 

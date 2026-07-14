@@ -66,6 +66,7 @@ public class PullRequestController {
                 new GithubPullRequestEvent.Repository(repo.getFullName(), repo.getHttpTransportUrl()),
                 new GithubPullRequestEvent.PullRequest(
                         pr.getNumber(),
+                        pr.getTitle(),
                         new GithubPullRequestEvent.Ref(pr.getBase().getSha()),
                         new GithubPullRequestEvent.Ref(pr.getHead().getSha())
                 )

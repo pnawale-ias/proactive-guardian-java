@@ -139,6 +139,7 @@ public class GitHubPollingService {
                 new GithubPullRequestEvent.Repository(repoFullName, cloneUrl),
                 new GithubPullRequestEvent.PullRequest(
                         pr.path("number").asInt(),
+                        pr.path("title").asText(""),
                         new GithubPullRequestEvent.Ref(pr.path("base_sha").asText(
                                 pr.at("/base/sha").asText())),
                         new GithubPullRequestEvent.Ref(pr.path("head_sha").asText(

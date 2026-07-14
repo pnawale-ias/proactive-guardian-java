@@ -6,6 +6,7 @@ import com.proactiveguardian.knowledge.VectorStore;
 import com.proactiveguardian.knowledge.VectorStore.Hit;
 import com.proactiveguardian.model.Artifact;
 import com.proactiveguardian.model.Finding;
+import com.proactiveguardian.model.PrContext;
 import com.proactiveguardian.model.Severity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,6 +66,10 @@ public class SchemaContractValidator {
      * @param after  artifact after PR change (null for deletions — skip)
      */
     public List<Finding> check(Artifact before, Artifact after) {
+        return check(before, after, PrContext.empty());
+    }
+
+    public List<Finding> check(Artifact before, Artifact after, PrContext prCtx) {
         // Only analyse code artifacts — data artifacts are handled by SchemaChangeDetector
         if (after == null) return List.of();
         if (after.type().isDataArtifact()) return List.of();
@@ -89,7 +94,9 @@ public class SchemaContractValidator {
         String code = truncateAtLine(diffContent, 2500);
         String userPrompt = promptTemplate
                 .replace("{schemas}", schemas.toString())
-                .replace("{code}", code);
+                .replace("{code}", code)
+                .replace("{pr_title}", prCtx.prTitle())
+                .replace("{commit_msg}", prCtx.commitMessage());
 
         Prompt prompt = new Prompt(List.of(
                 new SystemMessage("You output only valid JSON."),
@@ -229,11 +236,15 @@ public class SchemaContractValidator {
                     : "Schema contract: `" + table + "." + field + "` — " +
                       problem.substring(0, Math.min(60, problem.length()));
 
+            String fix = v.path("fix_suggestion").asText("");
+            String detail = problem + " (in `" + artifact.path() + "`)";
+            if (!fix.isBlank()) detail += "\n\n> 💡 **Suggested fix:** " + fix;
+
             findings.add(new Finding(
                     conf >= 0.85 ? Severity.BLOCK : Severity.WARN,
                     "schema_contract",
                     title,
-                    problem + " (in `" + artifact.path() + "`)",
+                    detail,
                     List.of(artifact.repo() + "::" + artifact.path() + "::" + artifact.name()),
                     conf
             ));

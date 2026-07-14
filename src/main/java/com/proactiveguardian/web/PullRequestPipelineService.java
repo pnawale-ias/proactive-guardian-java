@@ -6,7 +6,9 @@ import com.proactiveguardian.agent.GuardianOrchestrator;
 import com.proactiveguardian.agent.SqlReferenceAdvisor;
 import com.proactiveguardian.config.GuardianProperties;
 import com.proactiveguardian.ingestion.GitIngester;
+import com.proactiveguardian.ingestion.GitIngester.DiffResult;
 import com.proactiveguardian.model.Finding;
+import com.proactiveguardian.model.PrContext;
 import com.proactiveguardian.notifier.GitHubNotifier;
 import com.proactiveguardian.web.dto.GithubPullRequestEvent;
 import org.eclipse.jgit.api.Git;
@@ -110,12 +112,20 @@ public class PullRequestPipelineService {
             }
             log.debug("cloned {} into {} ({} ms)", repoName, tmp, System.currentTimeMillis() - t0);
 
-            List<GitIngester.Pair> pairs = gitIngester.diffChangedPairs(tmp, repoName, baseSha, headSha);
+            DiffResult diffResult = gitIngester.diffChangedPairs(tmp, repoName, baseSha, headSha);
+            List<GitIngester.Pair> pairs = diffResult.pairs();
             log.info("diff produced {} changed pair(s) for {}#{}", pairs.size(), repoName, prNumber);
+
+            PrContext prCtx = new PrContext(
+                    payload.pullRequest().title(),
+                    diffResult.commitMessage(),
+                    diffResult.fileSummary(),
+                    headSha
+            );
 
             List<Finding> allFindings = new ArrayList<>();
             for (GitIngester.Pair p : pairs) {
-                allFindings.addAll(orchestrator.analyzeChange(p.before(), p.after()));
+                allFindings.addAll(orchestrator.analyzeChange(p.before(), p.after(), prCtx));
             }
 
             // Always surface the known-consumer blast radius exactly once per PR,

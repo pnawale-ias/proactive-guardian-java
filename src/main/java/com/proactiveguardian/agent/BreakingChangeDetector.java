@@ -8,6 +8,7 @@ import com.proactiveguardian.knowledge.VectorStore;
 import com.proactiveguardian.knowledge.VectorStore.Hit;
 import com.proactiveguardian.model.Artifact;
 import com.proactiveguardian.model.Finding;
+import com.proactiveguardian.model.PrContext;
 import com.proactiveguardian.model.Severity;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -160,6 +161,10 @@ public class BreakingChangeDetector {
     // Public API
     // ------------------------------------------------------------------
     public List<Finding> check(Artifact before, Artifact after) {
+        return check(before, after, PrContext.empty());
+    }
+
+    public List<Finding> check(Artifact before, Artifact after, PrContext prCtx) {
         if (before == null && after == null) return List.of();
 
         // Non-code / non-API files (CI workflows, k8s manifests, docker-compose,
@@ -299,7 +304,7 @@ public class BreakingChangeDetector {
         }
 
         // Ask the LLM which consumers will actually break in downstream repos.
-        LlmVerdict verdict = predictBreakage(after, change, consumers);
+        LlmVerdict verdict = predictBreakage(after, change, consumers, prCtx);
 
         if (verdict.hasSignal()) {
             severity = mergeSeverity(severity, verdict);
@@ -328,7 +333,8 @@ public class BreakingChangeDetector {
                 title,
                 detail.toString(),
                 evidence,
-                confidence
+                confidence,
+                after != null ? after.url() : null
         ));
     }
 
@@ -1235,6 +1241,7 @@ public class BreakingChangeDetector {
     /** Aggregated LLM verdict about which consumers will break. */
     record LlmVerdict(double overallConfidence,
                       String summary,
+                      String fixSuggestion,
                       List<PredictedConsumer> breakers,
                       List<PredictedConsumer> safe,
                       boolean modelInvoked) {
@@ -1252,7 +1259,8 @@ public class BreakingChangeDetector {
 
     private LlmVerdict predictBreakage(Artifact after,
                                        String change,
-                                       List<Map<String, Object>> consumers) {
+                                       List<Map<String, Object>> consumers,
+                                       PrContext prCtx) {
         if (llmExecutor == null || !llmProps.enabled()) return emptyVerdict();
         if (consumers == null || consumers.isEmpty()) return emptyVerdict();
         if (after == null || after.name() == null || after.name().isBlank()) return emptyVerdict();
@@ -1264,7 +1272,10 @@ public class BreakingChangeDetector {
                 .replace("{repo}", nullSafe(after.repo()))
                 .replace("{language}", nullSafe(after.language()))
                 .replace("{change}", truncate(change, llmProps.maxChangeChars()))
-                .replace("{consumers}", rendered);
+                .replace("{consumers}", rendered)
+                .replace("{pr_title}", prCtx.prTitle())
+                .replace("{commit_msg}", prCtx.commitMessage())
+                .replace("{file_summary}", prCtx.fileSummary());
 
         Prompt prompt = new Prompt(List.of(
                 new SystemMessage("You output only valid JSON."),
@@ -1325,6 +1336,7 @@ public class BreakingChangeDetector {
 
         double overall = root.path("overall_confidence").asDouble(0.0);
         String summary = root.path("summary").asText("");
+        String fixSuggestion = root.path("fix_suggestion").asText("");
 
         List<PredictedConsumer> breakers = new ArrayList<>();
         List<PredictedConsumer> safe = new ArrayList<>();
@@ -1344,7 +1356,7 @@ public class BreakingChangeDetector {
                 if (pc.willBreak()) breakers.add(pc); else safe.add(pc);
             }
         }
-        return new LlmVerdict(overall, summary, breakers, safe, true);
+        return new LlmVerdict(overall, summary, fixSuggestion, breakers, safe, true);
     }
 
     private static Severity mergeSeverity(Severity baseline, LlmVerdict v) {
@@ -1394,6 +1406,9 @@ public class BreakingChangeDetector {
             detail.append("\n\n**No downstream break predicted** — reviewed ")
                   .append(v.safe().size()).append(" consumer(s).");
         }
+        if (v.fixSuggestion() != null && !v.fixSuggestion().isBlank()) {
+            detail.append("\n\n> 💡 **Suggested fix:** ").append(v.fixSuggestion());
+        }
     }
 
     /** Evidence list = LLM-predicted breakers first (repo::path::name), then remaining lexical consumers. */
@@ -1417,7 +1432,7 @@ public class BreakingChangeDetector {
     }
 
     private static LlmVerdict emptyVerdict() {
-        return new LlmVerdict(0.0, "", List.of(), List.of(), false);
+        return new LlmVerdict(0.0, "", "", List.of(), List.of(), false);
     }
 
     private static String nullSafe(String s) { return s == null ? "" : s; }
