@@ -5,7 +5,6 @@ import com.proactiveguardian.ingestion.ConfluenceIngester;
 import com.proactiveguardian.ingestion.GitIngester;
 import com.proactiveguardian.model.Artifact;
 import com.proactiveguardian.notifier.ConfluenceClient;
-import org.eclipse.jgit.api.Git;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -57,14 +56,14 @@ public class IngestController {
             @RequestParam(value = "repo_url",  required = false) String repoUrl,
             @RequestParam(value = "repo_name", required = false) String repoName) {
 
-        if (isBlank(repoUrl))  repoUrl  = props.githubRepoUrl();
+        if (isBlank(repoUrl)) repoUrl = props.githubRepoUrl();
+        if (isBlank(repoName)) repoName = deriveRepoName(repoUrl);
         if (isBlank(repoName)) repoName = props.githubRepoName();
 
-        if (isBlank(repoUrl) || isBlank(repoName)) {
-            log.warn("No repo_url/repo_name provided and no defaults configured");
+        if (isBlank(repoUrl)) {
+            log.warn("No repo_url provided and no default configured");
             return Map.of("ok", false,
-                    "reason", "repo_url and repo_name are required " +
-                              "(or set guardian.github-repo-url / guardian.github-repo-name)");
+                    "reason", "repo_url is required (or set guardian.github-repo-url)");
         }
 
         // Redact any embedded token when logging so PATs don't leak into logs.
@@ -75,12 +74,15 @@ public class IngestController {
         try {
             tmp = Files.createTempDirectory("guardian-ingest-");
             stage = "clone";
-            try (Git ignored = Git.cloneRepository()
-                    .setURI(repoUrl)
-                    .setDirectory(tmp.toFile())
-                    .call()) {
-                // clone completes when the try-block exits
-            }
+            // Use system git (respects SSH keys + git config) instead of JGit
+            String sshUrl = repoUrl.replaceFirst("https://github\\.com/", "git@github.com:");
+            Process process = new ProcessBuilder("git", "clone", "--depth=1", sshUrl, tmp.toString())
+                    .redirectErrorStream(true)
+                    .start();
+            String cloneOutput = new String(process.getInputStream().readAllBytes());
+            int exitCode = process.waitFor();
+            if (exitCode != 0)
+                throw new RuntimeException("git clone failed (exit " + exitCode + "): " + cloneOutput);
             stage = "parse";
             artifacts = gitIngester.ingestRepo(tmp, repoName);
         } catch (Exception ex) {
@@ -110,6 +112,13 @@ public class IngestController {
         // the app log without having to restart the app.
         try { banner.print(); } catch (Exception ignored) { /* best-effort */ }
         return out;
+    }
+
+    private static String deriveRepoName(String url) {
+        if (url == null) return null;
+        String u = url.trim().replaceAll("\\.git$", "");
+        int slash = u.lastIndexOf('/');
+        return slash >= 0 && slash + 1 < u.length() ? u.substring(slash + 1) : null;
     }
 
     /** Strip {@code https://<token>@github.com/…} so logs/responses don't leak PATs. */
