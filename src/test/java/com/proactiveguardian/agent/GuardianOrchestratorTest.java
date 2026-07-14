@@ -89,7 +89,8 @@ class GuardianOrchestratorTest {
     private static GuardianProperties props(double riskThreshold) {
         return new GuardianProperties(
                 "k", null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, null, null, null, null, riskThreshold
+                null, null, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, riskThreshold
         );
     }
 
