@@ -110,7 +110,8 @@ public class Neo4jGraphStore implements GraphStore {
             linkParams.put("ord", meta.get("ordinal"));
             linkParams.put("dtype", meta.get("data_type"));
             neo4j.query("""
-                    MATCH (t:Artifact {id: $tid}), (c:Artifact {id: $cid})
+                    MATCH (t:Artifact {id: $tid})
+                    MATCH (c:Artifact {id: $cid})
                     MERGE (t)-[r:HAS_COLUMN]->(c)
                     SET r.ordinal=$ord, r.data_type=$dtype
                     """).bindAll(linkParams).run();
@@ -120,7 +121,7 @@ public class Neo4jGraphStore implements GraphStore {
     @Override
     public void link(String srcId, String dstId, String rel) {
         String safeRel = sanitizeRelType(rel);
-        neo4j.query("MATCH (a:Artifact {id: $src}), (b:Artifact {id: $dst}) MERGE (a)-[:" + safeRel + "]->(b)")
+        neo4j.query("MATCH (a:Artifact {id: $src}) MATCH (b:Artifact {id: $dst}) MERGE (a)-[:" + safeRel + "]->(b)")
                 .bindAll(Map.of("src", srcId, "dst", dstId))
                 .run();
     }
@@ -217,7 +218,7 @@ public class Neo4jGraphStore implements GraphStore {
         String cypher = ("""
                 MATCH (t:Artifact {table_fqn: $fqn})
                 WHERE t.type IN ['sql_table', 'sql_view', 'dbt_model']
-                MATCH (consumer)-[:READS_TABLE|WRITES_TABLE|MAPPED_TO_TABLE|DBT_REFS|VIEW_OF*1..%d]->(t)
+                MATCH (consumer)-[:READS_TABLE|WRITES_TABLE|MAPPED_TO_TABLE|DBT_REFS|VIEW_OF|REFERENCES*1..%d]->(t)
                 WHERE consumer.id <> t.id
                 RETURN DISTINCT consumer.id AS id, consumer.name AS name,
                        consumer.repo AS repo, consumer.path AS path,
