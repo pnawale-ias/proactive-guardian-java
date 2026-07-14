@@ -75,9 +75,7 @@ public class ConstraintValidator {
                     .append(c.getStr("name")).append(": ").append(preview).append("\n");
         }
 
-        String codeSnippet = artifact.content() == null
-                ? ""
-                : artifact.content().substring(0, Math.min(2000, artifact.content().length()));
+        String codeSnippet = truncateAtLine(artifact.content(), 2000);
 
         String userPrompt = promptTemplate
                 .replace("{code}", codeSnippet)
@@ -132,6 +130,15 @@ public class ConstraintValidator {
             ));
         }
         return findings;
+    }
+
+    /** Truncate at the last newline within {@code maxChars}, so the LLM never sees a mid-statement cut. */
+    private static String truncateAtLine(String s, int maxChars) {
+        if (s == null) return "";
+        if (s.length() <= maxChars) return s;
+        int cut = s.lastIndexOf('\n', maxChars);
+        if (cut <= 0) cut = maxChars;
+        return s.substring(0, cut) + "\n// … (snippet truncated for brevity)";
     }
 }
 

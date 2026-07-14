@@ -82,6 +82,18 @@ public class ConsumerAwarenessAdvisor {
     public List<Finding> advise(String producerRepo, List<GitIngester.Pair> pairs) {
         if (producerRepo == null || producerRepo.isBlank()) return List.of();
 
+        // -------- 0) REST-API gate --------
+        // This advisory is scoped to REST-API producers: only emit it when the
+        // PR actually changes REST-API surface (controllers, endpoints,
+        // OpenAPI/Swagger specs, proto/route files, …). Non-API changes
+        // (internal refactors, build files, docs, workflows) should not
+        // produce a "Known consumers of <service>" section, since a
+        // "consumer" here means an HTTP/REST caller of the producer.
+        if (!touchesRestApi(pairs)) {
+            log.info("consumer-awareness: PR does not touch REST-API surface — skipping advisory");
+            return List.of();
+        }
+
         Map<String, Long> counts;
         try {
             counts = vectorStore.repoCounts();
@@ -95,20 +107,41 @@ public class ConsumerAwarenessAdvisor {
         String producerFull  = producerRepo;
 
         // -------- 1) Build the set of tokens we will scan the KB for --------
-        LinkedHashSet<String> tokens = new LinkedHashSet<>();
-        tokens.add(producerShort);
-        if (!producerFull.equalsIgnoreCase(producerShort)) tokens.add(producerFull);
+        // We split tokens into two buckets:
+        //   * producerTokens   → the producer repo name in short/full form.
+        //                        A hit on one of these is *strong* evidence
+        //                        that the candidate repo actually consumes
+        //                        this specific REST service (import path,
+        //                        HTTP URL, Feign client, dependency GAV,
+        //                        k8s service name, …).
+        //   * identifierTokens → class / file / workflow names touched by
+        //                        the PR. On their own these are unreliable:
+        //                        many services independently define a DTO
+        //                        called `UserRequest`, so a match does NOT
+        //                        prove consumption. We only use these to
+        //                        *enrich* evidence for repos that are
+        //                        already linked via a producerToken.
+        LinkedHashSet<String> producerTokens = new LinkedHashSet<>();
+        producerTokens.add(producerShort);
+        if (!producerFull.equalsIgnoreCase(producerShort)) producerTokens.add(producerFull);
+
+        LinkedHashSet<String> identifierTokens = new LinkedHashSet<>();
         if (pairs != null) {
             for (GitIngester.Pair p : pairs) {
-                collectTokens(p.after(),  tokens);
-                collectTokens(p.before(), tokens);
+                collectTokens(p.after(),  identifierTokens);
+                collectTokens(p.before(), identifierTokens);
             }
         }
-        // Filter out stopwords / too-short tokens (but always keep the repo names).
-        tokens.removeIf(t -> !t.equalsIgnoreCase(producerShort)
-                          && !t.equalsIgnoreCase(producerFull)
-                          && (t.length() < MIN_TOKEN_LEN
-                              || STOPWORDS.contains(t.toLowerCase(Locale.ROOT))));
+        // Never let a PR-derived identifier collide with a producer-name token.
+        identifierTokens.removeIf(t -> t.equalsIgnoreCase(producerShort)
+                                     || t.equalsIgnoreCase(producerFull));
+        // Filter out stopwords / too-short PR-derived tokens.
+        identifierTokens.removeIf(t -> t.length() < MIN_TOKEN_LEN
+                              || STOPWORDS.contains(t.toLowerCase(Locale.ROOT)));
+
+        LinkedHashSet<String> tokens = new LinkedHashSet<>();
+        tokens.addAll(producerTokens);
+        tokens.addAll(identifierTokens);
 
         // repo -> (token -> list of evidence labels)
         java.util.Map<String, java.util.Map<String, java.util.LinkedHashSet<String>>>
@@ -153,12 +186,40 @@ public class ConsumerAwarenessAdvisor {
             return List.of();
         }
 
+        // -------- 1b) Require producer-name evidence per repo --------
+        // A repo is only considered a consumer of *this* REST service if at
+        // least one of its indexed artifacts literally references the
+        // producer's repo/service name. This filters out false positives
+        // where two unrelated services happen to define a class with the
+        // same name (e.g. both `samplerestservice` and `generateautocode`
+        // define their own `UserRequest` DTO — the identifier match alone
+        // does NOT mean `generateautocode` calls `samplerestservice`).
+        evidenceByRepo.entrySet().removeIf(e -> {
+            var tokenMap = e.getValue();
+            boolean hasProducerLink = tokenMap.keySet().stream()
+                    .anyMatch(t -> t.equalsIgnoreCase(producerShort)
+                                || t.equalsIgnoreCase(producerFull));
+            if (!hasProducerLink) {
+                log.debug("consumer-awareness: dropping `{}` — matches only via shared identifiers {}, "
+                        + "no reference to producer `{}`",
+                        e.getKey(), tokenMap.keySet(), producerShort);
+            }
+            return !hasProducerLink;
+        });
+
+        if (evidenceByRepo.isEmpty()) {
+            log.info("consumer-awareness: no repo in the KB references producer `{}` directly — skipping advisory",
+                    producerShort);
+            return List.of();
+        }
+
         // -------- 2) Render the advisory --------
         StringBuilder detail = new StringBuilder();
         detail.append("The following repos have artifacts in the knowledge base that reference `")
-              .append(producerShort).append("` (by repo name and/or by identifiers this PR touches). ")
-              .append("Even if this PR did not trigger a specific breaking-change signal, please ")
-              .append("double-check that your changes don't break them:\n\n");
+              .append(producerShort).append("` directly (by repo/service name, HTTP client, ")
+              .append("dependency, etc.). Even if this PR did not trigger a specific ")
+              .append("breaking-change signal, please double-check that your changes don't ")
+              .append("break them:\n\n");
         for (var entry : evidenceByRepo.entrySet()) {
             String repo = entry.getKey();
             long indexed = counts.getOrDefault(repo, 0L);
@@ -242,5 +303,50 @@ public class ConsumerAwarenessAdvisor {
         int i = repo.lastIndexOf('/');
         return i < 0 ? repo : repo.substring(i + 1);
     }
+
+    // ------------------------------------------------------------------
+    // REST-API surface detection.
+    // Mirrors ConfluenceDocAdvisor#apiChangeLabel — kept local to avoid
+    // introducing a shared util class for two callers.
+    // ------------------------------------------------------------------
+
+    private static boolean touchesRestApi(List<GitIngester.Pair> pairs) {
+        if (pairs == null || pairs.isEmpty()) return false;
+        for (GitIngester.Pair p : pairs) {
+            if (isRestApiArtifact(p.after()) || isRestApiArtifact(p.before())) return true;
+        }
+        return false;
+    }
+
+    private static boolean isRestApiArtifact(Artifact a) {
+        if (a == null) return false;
+        // 1. Explicit API_ENDPOINT artifacts emitted by the code parser.
+        if (a.type() != null && "API_ENDPOINT".equalsIgnoreCase(a.type().name())) return true;
+
+        // 2. Path/name heuristics for controllers, OpenAPI specs, route files.
+        String path = a.path() == null ? "" : a.path().replace('\\', '/').toLowerCase(Locale.ROOT);
+        String name = a.name() == null ? "" : a.name().toLowerCase(Locale.ROOT);
+        String hay  = path + " " + name;
+        if (hay.contains("controller")    ||
+            hay.contains("restcontroller") ||
+            hay.contains("/resource")     || hay.contains("resource.java") ||
+            hay.contains("/routes")       || hay.contains("routes.")       ||
+            hay.contains("openapi")       || hay.contains("swagger")       ||
+            hay.contains("/api/")         || hay.endsWith(".proto")) {
+            return true;
+        }
+
+        // 3. Content-level check: look for Spring/JAX-RS/Feign mapping
+        //    annotations in the artifact body when available.
+        String content = a.content();
+        if (content != null && !content.isBlank()) {
+            return REST_ANNOTATION.matcher(content).find();
+        }
+        return false;
+    }
+
+    private static final java.util.regex.Pattern REST_ANNOTATION = java.util.regex.Pattern.compile(
+            "@(?:RestController|Controller|RequestMapping|GetMapping|PostMapping|" +
+            "PutMapping|PatchMapping|DeleteMapping|FeignClient|Path|POST|GET|PUT|DELETE|PATCH)\\b");
 }
 

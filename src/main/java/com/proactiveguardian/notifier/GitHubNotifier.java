@@ -42,9 +42,7 @@ public class GitHubNotifier {
     public GitHubNotifier(GuardianProperties props) {
         GitHub instance;
         try {
-            instance = new GitHubBuilder().withOAuthToken(
-                    props.githubToken() == null ? "" : props.githubToken()
-            ).build();
+            instance = new GitHubBuilder().withOAuthToken(resolveToken(props)).build();
         } catch (IOException e) {
             log.warn("GitHub client init failed, falling back to anonymous: {}", e.getMessage());
             try {
@@ -54,6 +52,21 @@ public class GitHubNotifier {
             }
         }
         this.gh = instance;
+    }
+
+    private static String resolveToken(GuardianProperties props) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("gh", "auth", "token")
+                    .redirectErrorStream(true);
+            pb.environment().remove("GITHUB_TOKEN");
+            Process p = pb.start();
+            String token = new String(p.getInputStream().readAllBytes()).trim();
+            p.waitFor();
+            if (!token.isBlank()) return token;
+        } catch (Exception e) {
+            log.debug("gh auth token unavailable, falling back to configured token: {}", e.getMessage());
+        }
+        return props.githubToken() == null ? "" : props.githubToken();
     }
 
     public void postPrComment(String repoFullName, int prNumber, List<Finding> findings) {

@@ -72,6 +72,22 @@ public class ConfluenceDocAdvisor {
     public List<Finding> advise(List<GitIngester.Pair> pairs) {
         if (pairs == null || pairs.isEmpty()) return List.of();
 
+        // Derive the producer repo/service name from the PR's changed
+        // artifacts. We use this to *scope* the Confluence match: a page is
+        // only considered relevant if it literally mentions this producer's
+        // repo or service name. Without this scoping, two unrelated services
+        // that share DTO names (e.g. both define `UserRequest`) end up
+        // linking to each other's Confluence pages.
+        String producerRepo = null;
+        for (GitIngester.Pair p : pairs) {
+            Artifact a = p.after() != null ? p.after() : p.before();
+            if (a != null && a.repo() != null && !a.repo().isBlank()) {
+                producerRepo = a.repo();
+                break;
+            }
+        }
+        String producerShort = producerRepo == null ? null : shortRepo(producerRepo);
+
         // Collect salient tokens across every changed artifact, and note
         // whether the diff touches anything that *should* be documented on
         // Confluence (an API endpoint, controller, OpenAPI spec, …).
@@ -85,11 +101,20 @@ public class ConfluenceDocAdvisor {
         }
         tokens.removeIf(t -> t.length() < MIN_TOKEN_LEN
                 || STOPWORDS.contains(t.toLowerCase(Locale.ROOT)));
-        if (tokens.isEmpty() && apiChanges.isEmpty()) return List.of();
+
+        // Producer-scoping tokens (always scanned, never stopword-filtered).
+        Set<String> producerTokens = new LinkedHashSet<>();
+        if (producerShort != null && !producerShort.isBlank()) producerTokens.add(producerShort);
+        if (producerRepo != null && !producerRepo.equalsIgnoreCase(producerShort)) producerTokens.add(producerRepo);
+
+        if (tokens.isEmpty() && apiChanges.isEmpty() && producerTokens.isEmpty()) return List.of();
 
         // page-id -> aggregated match info
         Map<String, PageMatch> byPage = new LinkedHashMap<>();
-        for (String token : tokens) {
+        Set<String> allScanTokens = new LinkedHashSet<>();
+        allScanTokens.addAll(producerTokens);
+        allScanTokens.addAll(tokens);
+        for (String token : allScanTokens) {
             List<VectorStore.Hit> hits;
             try {
                 hits = vectorStore.scanReferences(token, PER_TOKEN_CAP);
@@ -108,6 +133,30 @@ public class ConfluenceDocAdvisor {
                 String key = id != null ? id : (url != null ? url : title);
                 byPage.computeIfAbsent(key, k -> new PageMatch(title, url))
                       .tokens.add(token);
+            }
+        }
+
+        // Producer-scoping: keep only pages that literally reference this
+        // producer (its repo / service name). A page that only matches via
+        // shared identifiers like `UserRequest` may belong to a completely
+        // different service with the same DTO structure — dropping it here
+        // prevents cross-service page contamination.
+        if (!producerTokens.isEmpty()) {
+            int before = byPage.size();
+            byPage.entrySet().removeIf(e -> {
+                boolean linked = e.getValue().tokens.stream()
+                        .anyMatch(t -> producerTokens.stream().anyMatch(t::equalsIgnoreCase));
+                if (!linked) {
+                    log.debug("confluence-doc: dropping page `{}` — matches only via shared identifiers {}, "
+                            + "no reference to producer `{}`",
+                            e.getValue().title, e.getValue().tokens, producerShort);
+                }
+                return !linked;
+            });
+            int dropped = before - byPage.size();
+            if (dropped > 0) {
+                log.info("confluence-doc: producer-scoping dropped {} page(s) that only shared identifiers with producer `{}`",
+                        dropped, producerShort);
             }
         }
 
@@ -130,6 +179,12 @@ public class ConfluenceDocAdvisor {
         log.info("confluence-doc: no Confluence page references any of {} token(s) — asking reviewer to add a page for {} change(s)",
                 tokens.size(), surface.size());
         return List.of(buildMissingFinding(surface, !apiChanges.isEmpty()));
+    }
+
+    private static String shortRepo(String repo) {
+        if (repo == null) return "";
+        int i = repo.lastIndexOf('/');
+        return i < 0 ? repo : repo.substring(i + 1);
     }
 
     /** Fallback surface: every changed file, best-effort short path. */

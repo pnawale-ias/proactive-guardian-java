@@ -29,6 +29,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -979,12 +980,19 @@ public class BreakingChangeDetector {
         List<Map<String, Object>> consumers = new ArrayList<>();
         Set<String> seen = new HashSet<>();
 
+        String ownRepoShort = ownRepo == null ? null : shortRepoName(ownRepo);
         for (Hit h : candidates) {
             Map<String, Object> p = h.payload();
             Object id = p.get("id");
             if (id == null || !seen.add(id.toString())) continue;
-            if (ownRepo != null && ownRepo.equals(p.get("repo"))
-                    && symbolName.equals(p.get("name"))) continue;
+            // Skip artifacts belonging to the producer's own repo — those are
+            // the producer side (controller, DTO, service impl), not
+            // downstream consumers. Compare by short repo name so that
+            // `softwarepravin2007/samplerestservice` matches `samplerestservice`
+            // in either the producer or the KB payload.
+            Object hitRepo = p.get("repo");
+            if (ownRepoShort != null && hitRepo != null
+                    && ownRepoShort.equalsIgnoreCase(shortRepoName(hitRepo.toString()))) continue;
             String content = p.get("content") == null ? "" : p.get("content").toString();
             if (tokenRe.matcher(content).find()) consumers.add(p);
         }
@@ -1041,14 +1049,23 @@ public class BreakingChangeDetector {
 
     /**
      * True when the consumer content shows hard evidence of actually calling
-     * the producer's API. We require ONE of:
-     *   1. Java-side reference to the DTO class in a code-like context
-     *      (import statement, `new UserRequest(`, typed variable declaration,
-     *      generic type parameter, or `UserRequest.class`).
-     *   2. The REST path appearing inside a quoted string AND the same file
-     *      using a recognised HTTP-client library (RestTemplate / WebClient /
-     *      Feign / OkHttp / Java 11 HttpClient / axios / fetch / requests / …).
-     * Anything less is discarded to prevent noisy cross-repo matches.
+     * / consuming the producer's API. We accept a candidate iff BOTH:
+     *
+     *   (P1) The file is not itself a producer of this API — i.e. it does
+     *        not declare the DTO type and is not a REST controller /
+     *        JAX-RS resource / OpenAPI document. This eliminates the class
+     *        of false positives where another repo happens to define its
+     *        own `UserRequest` / `UserController` (e.g. `generateautocode`
+     *        and the producer itself, `samplerestservice`).
+     *   (P2) The file plausibly consumes the producer via at least ONE of:
+     *          • an HTTP or gRPC client call attributed to the producer
+     *            (RestTemplate / WebClient / Feign / OkHttp / HttpClient /
+     *            axios / fetch / requests / gRPC stub, …) combined with a
+     *            reference to the producer's DTO type or REST path;
+     *          • an import / typed reference to the producer's DTO from a
+     *            *different* repo — the DTO ships as part of the producer's
+     *            published API surface, so a cross-repo strong type
+     *            reference is by itself sufficient evidence of consumption.
      */
     private static boolean isLikelyConsumer(Map<String, Object> c, ChangeAnalysis a) {
         Object contentObj = c.get("content");
@@ -1056,15 +1073,143 @@ public class BreakingChangeDetector {
         if (content.isBlank()) return false;
 
         String enclosing = a.enclosingType();
-        if (enclosing != null && !enclosing.isBlank() && hasStrongTypeReference(content, enclosing)) {
+
+        // (P1) Producer-side files are never consumers.
+        if (enclosing != null && !enclosing.isBlank() && definesType(content, enclosing)) {
+            return false;
+        }
+        if (isRestProducerFile(content)) {
+            return false;
+        }
+        // Method-granularity KB artifacts (e.g. `UserController::createUser`)
+        // only contain the method body, so content-level heuristics above
+        // miss the class-level `@RestController`. Fall back to the path /
+        // symbol name — anything living under a `*Controller.java` file or a
+        // `/controller/`, `/controllers/`, `/resource/`, `/resources/` folder
+        // is producer-side code, not a caller.
+        Object pathObj = c.get("path");
+        Object nameObj = c.get("name");
+        String cPath = pathObj == null ? "" : pathObj.toString().replace('\\', '/').toLowerCase(Locale.ROOT);
+        String cName = nameObj == null ? "" : nameObj.toString();
+        if (looksLikeProducerLocation(cPath, cName)) {
+            return false;
+        }
+
+        // (P2a) Direct HTTP / gRPC client call + attribution.
+        boolean hasClientCall = hasHttpOrGrpcClientCall(content);
+        boolean typeRef = enclosing != null && !enclosing.isBlank()
+                && hasStrongTypeReference(content, enclosing);
+        String rest = a.restPath();
+        boolean pathRef = rest != null && !rest.isBlank()
+                && Pattern.compile("[\"']" + Pattern.quote(rest) + "(?:[/?\"']|$)")
+                          .matcher(content).find();
+        if (hasClientCall && (typeRef || pathRef)) {
             return true;
         }
 
-        String rest = a.restPath();
-        if (rest != null && !rest.isBlank() && hasHttpCallToPath(content, rest)) {
-            return true;
+        // (P2b) Cross-repo strong type reference to the producer DTO. The
+        //       producer's own repo is already excluded upstream in
+        //       findConsumers(), so any typed reference we see here is
+        //       coming from a different repo — that repo imported the DTO
+        //       precisely because it consumes the producer.
+        return typeRef;
+    }
+
+    /**
+     * True when {@code content} shows an HTTP client (Spring RestTemplate /
+     * WebClient / RestClient / HttpExchange, Feign, OkHttp, Retrofit, Java
+     * HttpClient, Apache HttpClient, axios / fetch / XMLHttpRequest, Python
+     * requests / urllib / httpx, Go net/http, …) OR a gRPC stub invocation.
+     */
+    private static boolean hasHttpOrGrpcClientCall(String content) {
+        // HTTP client libraries and annotations.
+        Pattern http = Pattern.compile(
+                "\\b(?:RestTemplate|WebClient|RestClient|HttpClient|HttpURLConnection|"
+                + "OkHttpClient|OkHttp|Retrofit|FeignClient|HttpEntity|ResponseEntity|"
+                + "HttpRequest|HttpResponse|axios|fetch|XMLHttpRequest|requests|urllib|"
+                + "httpx|aiohttp|http\\.Client|http\\.Get|http\\.Post|http\\.NewRequest)\\b"
+                + "|@(?:FeignClient|RestClient|RetrofitClient|HttpExchange|"
+                + "GetExchange|PostExchange|PutExchange|PatchExchange|DeleteExchange)\\b",
+                Pattern.CASE_INSENSITIVE);
+        if (http.matcher(content).find()) return true;
+
+        // gRPC generated stubs / channels.
+        Pattern grpc = Pattern.compile(
+                "\\b(?:ManagedChannel|ManagedChannelBuilder|Grpc\\.newBlockingStub|"
+                + "newBlockingStub|newFutureStub|newStub|grpc\\.Dial|grpc\\.NewClient|"
+                + "grpc\\.insecure|Channel\\.builder|BlockingStub|FutureStub|AsyncStub)\\b"
+                + "|import\\s+io\\.grpc\\."
+                + "|from\\s+grpc\\s+import"
+                + "|require\\(['\"]@grpc/grpc-js['\"]\\)");
+        return grpc.matcher(content).find();
+    }
+
+    /** True when {@code content} declares the given Java type (class / interface / record / enum). */
+    private static boolean definesType(String content, String typeName) {
+        String q = Pattern.quote(typeName);
+        return Pattern.compile(
+                "(?m)\\b(?:class|interface|record|enum|@interface)\\s+" + q + "\\b")
+                .matcher(content).find();
+    }
+
+    /**
+     * True when the file looks like a REST **producer** — i.e. it hosts
+     * endpoints rather than calling them. Signals: Spring stereotype
+     * annotations at class level, class-level request mapping, JAX-RS
+     * {@code @Path} on a class, or an OpenAPI/Swagger document body.
+     * Note: mere presence of {@code @RequestBody} / {@code @PathVariable}
+     * doesn't qualify — those appear on method params of producers.
+     */
+    private static boolean isRestProducerFile(String content) {
+        // Class-level stereotypes.
+        if (Pattern.compile("(?m)^\\s*@(?:RestController|Controller)\\b").matcher(content).find()) return true;
+        // Class-level @RequestMapping (typically the line right above `class Foo`).
+        if (Pattern.compile("(?s)@RequestMapping\\s*\\([^)]*\\)\\s*(?:@\\w+\\s*(?:\\([^)]*\\))?\\s*)*"
+                + "(?:public\\s+|abstract\\s+|final\\s+)*class\\s+\\w+").matcher(content).find()) return true;
+        // JAX-RS resource at class level.
+        if (Pattern.compile("(?s)@Path\\s*\\([^)]*\\)\\s*(?:@\\w+\\s*(?:\\([^)]*\\))?\\s*)*"
+                + "(?:public\\s+|abstract\\s+|final\\s+)*class\\s+\\w+").matcher(content).find()) return true;
+        // OpenAPI / Swagger document.
+        if (Pattern.compile("(?m)^(?:openapi|swagger)\\s*:\\s*[\"']?\\d").matcher(content).find()) return true;
+        return false;
+    }
+
+    /**
+     * True when the artifact's file path or symbol name indicates it lives in
+     * REST-producer code (controllers / JAX-RS resources / gRPC service impls
+     * / OpenAPI specs). Used for method-granularity KB artifacts whose
+     * content lacks class-level annotations.
+     */
+    private static boolean looksLikeProducerLocation(String lcPath, String name) {
+        if (lcPath != null && !lcPath.isEmpty()) {
+            if (lcPath.contains("/controller/")   ||
+                lcPath.contains("/controllers/")  ||
+                lcPath.contains("/resource/")     ||
+                lcPath.contains("/resources/")    ||
+                lcPath.endsWith("controller.java")||
+                lcPath.endsWith("controller.kt")  ||
+                lcPath.endsWith("resource.java")  ||
+                lcPath.endsWith("resource.kt")    ||
+                lcPath.endsWith(".proto")         ||
+                lcPath.contains("openapi")        ||
+                lcPath.contains("swagger")) {
+                return true;
+            }
+        }
+        if (name != null && !name.isEmpty()) {
+            if (name.endsWith("Controller") || name.endsWith("Resource")
+                    || name.endsWith("GrpcService") || name.endsWith("ServiceImpl")) {
+                return true;
+            }
         }
         return false;
+    }
+
+    /** Last path segment of an org/repo slug — {@code owner/repo} → {@code repo}. */
+    private static String shortRepoName(String repo) {
+        if (repo == null) return "";
+        int i = repo.lastIndexOf('/');
+        return i < 0 ? repo : repo.substring(i + 1);
     }
 
     /** Detects import / instantiation / typed reference / .class of the given Java type. */
@@ -1082,18 +1227,6 @@ public class BreakingChangeDetector {
         return p.matcher(content).find();
     }
 
-    /** Detects a quoted occurrence of the REST path near a known HTTP-client call. */
-    private static boolean hasHttpCallToPath(String content, String restPath) {
-        Pattern quoted = Pattern.compile("[\"']" + Pattern.quote(restPath) + "(?:[/?\"']|$)");
-        if (!quoted.matcher(content).find()) return false;
-        Pattern httpHint = Pattern.compile(
-                "\\b(?:RestTemplate|WebClient|HttpClient|HttpURLConnection|OkHttpClient|"
-                + "FeignClient|RestClient|HttpEntity|ResponseEntity|HttpRequest|"
-                + "axios|fetch|XMLHttpRequest|requests|urllib|http\\.request)\\b"
-                + "|@FeignClient|@RestClient|@RetrofitClient|@HttpExchange",
-                Pattern.CASE_INSENSITIVE);
-        return httpHint.matcher(content).find();
-    }
 
     // ------------------------------------------------------------------
     // LLM cross-repo impact prediction
