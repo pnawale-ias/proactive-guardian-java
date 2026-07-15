@@ -24,5 +24,5 @@ Code change:
 {code}
 
 Return STRICT JSON only — no markdown fences, no prose — exactly:
-{"violations": [{"table": "...", "field": "...", "problem": "one-line description", "confidence": 0.0-1.0}]}
+{"violations": [{"table": "...", "field": "...", "problem": "one-line description", "code_snippet": "the exact offending line(s) from the code change, verbatim", "confidence": 0.0-1.0}]}
 If there are no violations: {"violations": []}

@@ -45,6 +45,16 @@ public interface VectorStore {
     }
 
     /**
+     * Like {@link #searchSimilar} but excludes artifacts whose {@code repo}
+     * payload matches {@code excludeRepo} (short name comparison). Default
+     * implementation post-filters; implementations may override with a native
+     * store filter so the top-k budget is not wasted on same-repo hits.
+     */
+    default List<Hit> searchSimilarExcludingRepo(String text, int k, String excludeRepo) {
+        return searchSimilar(text, k, null);
+    }
+
+    /**
      * Distinct {@code repo} payload values present in the store, mapped to the
      * number of artifacts each repo contributes. Used at startup to print an
      * "ingested services" summary. Default is empty (fakes / non-Qdrant stores).

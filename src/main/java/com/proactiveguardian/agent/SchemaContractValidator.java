@@ -281,18 +281,26 @@ public class SchemaContractValidator {
             String table   = v.path("table").asText("");
             String field   = v.path("field").asText("");
             String problem = v.path("problem").asText("");
+            String snippet = v.path("code_snippet").asText("");
             if (problem.isBlank()) continue;
             if (!seen.add(table + "::" + field + "::" + problem)) continue;
 
             String title = table.isBlank()
                     ? "Schema contract violation in `" + artifact.name() + "`"
-                    : "Schema contract: `" + table + "." + field + "` — " + problem;
+                    : "Schema contract: `" + table + "." + field + "`";
+
+            StringBuilder detail = new StringBuilder();
+            detail.append(problem).append("\n\n")
+                  .append("**File:** `").append(artifact.path()).append("`");
+            if (!snippet.isBlank()) {
+                detail.append("\n\n```java\n").append(snippet.strip()).append("\n```");
+            }
 
             findings.add(new Finding(
                     conf >= 0.85 ? Severity.BLOCK : Severity.WARN,
                     "schema_contract",
                     title,
-                    problem + " (in `" + artifact.path() + "`)",
+                    detail.toString(),
                     List.of(artifact.repo() + "::" + artifact.path() + "::" + artifact.name()),
                     conf
             ));

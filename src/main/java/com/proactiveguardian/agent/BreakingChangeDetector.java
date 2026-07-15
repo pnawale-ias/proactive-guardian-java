@@ -199,7 +199,7 @@ public class BreakingChangeDetector {
         // downstream callers that POST JSON to /users without importing the DTO.
         List<Map<String, Object>> consumers = analysis.hasFieldSignal()
                 ? findConsumersBroad(after, analysis)
-                : findConsumers(after.name(), after.repo());
+                : findConsumersForArtifact(after);
 
         // Classify each consumer against the impacted fields.
         List<String> impactedFields = analysis.impactedFields();
@@ -263,48 +263,38 @@ public class BreakingChangeDetector {
             detail.append(". Consumers still reading these fields will get `null` / missing values.");
         }
 
-        // Per-repo verdict table — this is the actionable core for reviewers.
-        if (!missingByRepo.isEmpty() || !setsByRepo.isEmpty() || !unclearByRepo.isEmpty()) {
-            detail.append("\n\n### 📡 Downstream consumer impact\n");
-            if (!missingByRepo.isEmpty()) {
-                detail.append("\n**🚫 Will break** — do NOT set `")
-                      .append(String.join("`, `", impactedFields)).append("`:\n");
-                missingByRepo.forEach((r, locs) -> detail.append("- `").append(r).append("` — ")
-                        .append(String.join(", ", locs)).append('\n'));
-            }
-            if (reqSignal != null && !setsByRepo.isEmpty()) {
-                detail.append("\n**✅ Safe** — already set the field(s):\n");
-                setsByRepo.forEach((r, locs) -> detail.append("- `").append(r).append("` — ")
-                        .append(String.join(", ", locs)).append('\n'));
-            }
-            if (!unclearByRepo.isEmpty()) {
-                detail.append("\n**❓ Uncertain** — reference the DTO/endpoint but usage is unclear from static analysis:\n");
-                unclearByRepo.forEach((r, locs) -> detail.append("- `").append(r).append("` — ")
-                        .append(String.join(", ", locs)).append('\n'));
-            }
-        } else if (analysis.hasFieldSignal()) {
-            detail.append("\n\n_No downstream consumer files were found in the knowledge base for this DTO/endpoint. "
-                    + "Ensure every repo under your org (e.g. `softwarepravin2007/*`) has been ingested — "
-                    + "see `scripts/ingest-consumers.sh`. Any consumer that omits the field will still break at runtime._");
-        }
-
-        if (!consumers.isEmpty()) {
-            Set<Object> repos = new HashSet<>();
-            for (Map<String, Object> c : consumers) if (c.get("repo") != null) repos.add(c.get("repo"));
-            detail.append("\n\n_Scanned **").append(consumers.size())
-                    .append(" consumer file(s)** across **").append(repos.size()).append(" repo(s)**._");
-            if (!crossRepo.isEmpty()) {
-                detail.append(" Cross-repo: `").append(String.join("`, `", crossRepo)).append("`.");
-            }
-        }
-
         // Ask the LLM which consumers will actually break in downstream repos.
         LlmVerdict verdict = predictBreakage(after, change, consumers);
-
         if (verdict.hasSignal()) {
             severity = mergeSeverity(severity, verdict);
             confidence = mergeConfidence(confidence, verdict);
-            appendLlmDetail(detail, verdict);
+        }
+
+        // Single consolidated consumer section.
+        if (!missingByRepo.isEmpty() || !setsByRepo.isEmpty() || !unclearByRepo.isEmpty()) {
+            detail.append("\n\n### Downstream consumers\n");
+            if (!missingByRepo.isEmpty()) {
+                detail.append("\n**🚫 Will break:**\n");
+                missingByRepo.forEach((r, locs) -> appendRepoLine(detail, r, locs));
+            }
+            if (reqSignal != null && !setsByRepo.isEmpty()) {
+                detail.append("\n**✅ Safe** — already sets the field(s):\n");
+                setsByRepo.forEach((r, locs) -> appendRepoLine(detail, r, locs));
+            }
+            if (!unclearByRepo.isEmpty()) {
+                String verdictLabel = verdict.hasSignal() && !verdict.breakers().isEmpty()
+                        ? "**⚠️ May break:**"
+                        : "**❓ Referenced by:**";
+                detail.append('\n').append(verdictLabel).append('\n');
+                unclearByRepo.forEach((r, locs) -> appendRepoLine(detail, r, locs));
+            }
+            if (verdict.hasSignal() && !verdict.breakers().isEmpty()
+                    && verdict.summary() != null && !verdict.summary().isBlank()) {
+                detail.append("\n> ").append(verdict.summary().replace("\n", "\n> "));
+            }
+        } else if (analysis.hasFieldSignal()) {
+            detail.append("\n\n_No downstream consumers found in the knowledge base. "
+                    + "Ingest other repos to enable cross-repo impact analysis._");
         }
 
         List<String> evidence = buildEvidence(consumers, verdict);
@@ -378,12 +368,24 @@ public class BreakingChangeDetector {
 
     private static String shortLoc(Map<String, Object> c) {
         Object p = c.get("path");
-        Object n = c.get("name");
         String path = p == null ? "?" : p.toString();
         // Strip leading absolute-path noise if present.
         int idx = path.lastIndexOf("/src/");
         if (idx > 0) path = path.substring(idx + 1);
-        return "`" + path + (n == null ? "" : "::" + n) + "`";
+        return "`" + path + "`";
+    }
+
+    private static final int MAX_LOCS_PER_REPO = 3;
+
+    private static void appendRepoLine(StringBuilder sb, String repo, Set<String> locs) {
+        List<String> sorted = new ArrayList<>(locs);
+        int shown = Math.min(sorted.size(), MAX_LOCS_PER_REPO);
+        sb.append("- `").append(repo).append("` — ")
+          .append(String.join(", ", sorted.subList(0, shown)));
+        if (sorted.size() > shown) {
+            sb.append(" _(+").append(sorted.size() - shown).append(" more)_");
+        }
+        sb.append('\n');
     }
 
     /** Externally invoked when the after-version is {@code null}. */
@@ -968,13 +970,46 @@ public class BreakingChangeDetector {
     // ------------------------------------------------------------------
     // Consumer discovery (cross-repo)
     // ------------------------------------------------------------------
+
+    /**
+     * Consumer discovery for non-field-signal artifacts. For proto request
+     * messages (e.g. {@code UpdateExchangeMappingRequest}), also searches by
+     * the derived gRPC method name ({@code updateExchangeMapping}) since
+     * TypeScript/Go/Python consumers reference the method, not the request type.
+     */
+    private List<Map<String, Object>> findConsumersForArtifact(Artifact after) {
+        String name = after.name();
+        List<Map<String, Object>> results = new ArrayList<>(findConsumers(name, after.repo()));
+
+        // For proto Request messages, also search by the camelCase method name
+        boolean isProto = "proto".equals(after.language())
+                || (after.path() != null && after.path().endsWith(".proto"));
+        if (isProto && name != null && name.endsWith("Request")) {
+            String stripped = name.substring(0, name.length() - "Request".length());
+            if (!stripped.isBlank()) {
+                String methodName = Character.toLowerCase(stripped.charAt(0)) + stripped.substring(1);
+                for (Map<String, Object> c : findConsumers(methodName, after.repo())) {
+                    // merge by id to avoid duplicates
+                    Object id = c.get("id");
+                    boolean already = id != null && results.stream()
+                            .anyMatch(r -> id.equals(r.get("id")));
+                    if (!already) results.add(c);
+                }
+            }
+        }
+        return results;
+    }
+
     private List<Map<String, Object>> findConsumers(String symbolName, String ownRepo) {
         if (symbolName == null || symbolName.isBlank()
                 || GENERIC_NAMES.contains(symbolName) || symbolName.length() < 3) {
             return List.of();
         }
 
-        List<Hit> candidates = vs.searchSimilar(symbolName, 40);
+        // Exclude the producer repo at the Qdrant level so the top-k budget
+        // is not wasted on same-repo hits when many artifacts from the producer
+        // are in the KB (e.g. controllers, tests, DTOs all referencing the symbol).
+        List<Hit> candidates = vs.searchSimilarExcludingRepo(symbolName, 40, ownRepo);
         Pattern tokenRe = Pattern.compile("\\b" + Pattern.quote(symbolName) + "\\b");
 
         List<Map<String, Object>> consumers = new ArrayList<>();
@@ -985,11 +1020,7 @@ public class BreakingChangeDetector {
             Map<String, Object> p = h.payload();
             Object id = p.get("id");
             if (id == null || !seen.add(id.toString())) continue;
-            // Skip artifacts belonging to the producer's own repo — those are
-            // the producer side (controller, DTO, service impl), not
-            // downstream consumers. Compare by short repo name so that
-            // `softwarepravin2007/samplerestservice` matches `samplerestservice`
-            // in either the producer or the KB payload.
+            // Secondary same-repo guard (covers edge cases where short names differ).
             Object hitRepo = p.get("repo");
             if (ownRepoShort != null && hitRepo != null
                     && ownRepoShort.equalsIgnoreCase(shortRepoName(hitRepo.toString()))) continue;
@@ -1000,7 +1031,11 @@ public class BreakingChangeDetector {
         try {
             for (Map<String, Object> hop : gs.impactRadiusByName(symbolName, 2)) {
                 Object id = hop.get("id");
-                if (id != null && seen.add(id.toString())) consumers.add(hop);
+                if (id == null || !seen.add(id.toString())) continue;
+                Object hitRepo = hop.get("repo");
+                if (ownRepoShort != null && hitRepo != null
+                        && ownRepoShort.equalsIgnoreCase(shortRepoName(hitRepo.toString()))) continue;
+                consumers.add(hop);
             }
         } catch (Exception ignored) { /* graph optional in tests */ }
 
@@ -1374,29 +1409,7 @@ public class BreakingChangeDetector {
         return baseline;
     }
 
-    private static void appendLlmDetail(StringBuilder detail, LlmVerdict v) {
-        detail.append("\n\n**🤖 LLM cross-repo impact analysis** (confidence ")
-              .append(String.format("%.2f", v.overallConfidence())).append("):");
-        if (v.summary() != null && !v.summary().isBlank()) {
-            detail.append("\n> ").append(v.summary().replace("\n", "\n> "));
-        }
-        if (!v.breakers().isEmpty()) {
-            detail.append("\n\n**Consumers predicted to break:**");
-            int shown = 0;
-            for (PredictedConsumer pc : v.breakers()) {
-                if (shown++ >= 5) { detail.append("\n- … (").append(v.breakers().size() - 5).append(" more)"); break; }
-                detail.append("\n- `").append(nullSafe(pc.repo()))
-                      .append("::").append(PathUtils.repoRelative(pc.path())).append("` ")
-                      .append("(conf ").append(String.format("%.2f", pc.confidence())).append(") — ")
-                      .append(nullSafe(pc.reason()));
-            }
-        } else if (!v.safe().isEmpty()) {
-            detail.append("\n\n**No downstream break predicted** — reviewed ")
-                  .append(v.safe().size()).append(" consumer(s).");
-        }
-    }
-
-    /** Evidence list = LLM-predicted breakers first (repo::path::name), then remaining lexical consumers. */
+/** Evidence list = LLM-predicted breakers first (repo::path::name), then remaining lexical consumers. */
     private static List<String> buildEvidence(List<Map<String, Object>> consumers, LlmVerdict v) {
         LinkedHashSet<String> out = new LinkedHashSet<>();
         if (v != null) {

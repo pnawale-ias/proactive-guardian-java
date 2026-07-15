@@ -220,8 +220,9 @@ public class ConfluenceDocAdvisor {
         for (PageMatch pm : shown) {
             String linkText = pm.title != null && !pm.title.isBlank() ? pm.title : "(untitled page)";
             if (pm.url != null && !pm.url.isBlank()) {
-                detail.append("- [").append(linkText).append("](").append(pm.url).append(")");
-                evidence.add(pm.url);
+                String cleanUrl = pm.url.replaceAll("(?<!:)//", "/");
+                detail.append("- [").append(linkText).append("](").append(cleanUrl).append(")");
+                evidence.add(cleanUrl);
             } else {
                 detail.append("- ").append(linkText);
                 evidence.add(linkText);

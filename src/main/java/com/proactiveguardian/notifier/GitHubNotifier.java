@@ -129,18 +129,31 @@ public class GitHubNotifier {
 
     String render(List<Finding> findings) {
         StringBuilder sb = new StringBuilder("## 🛡️ Proactive Guardian Report\n\n");
-        List<Finding> sorted = findings.stream()
+
+        // Group by category, preserving highest-confidence-first order within each group
+        Map<String, List<Finding>> byCategory = findings.stream()
                 .sorted(Comparator.comparingDouble(Finding::confidence).reversed())
-                .toList();
-        for (int i = 0; i < sorted.size(); i++) {
-            Finding f = sorted.get(i);
-            String emoji = SEV_EMOJI.getOrDefault(f.severity(), "•");
-            sb.append("### ").append(emoji).append(' ').append(f.title()).append('\n')
-              .append("**Category:** `").append(f.category()).append("` · ")
-              .append("**Confidence:** ").append(Math.round(f.confidence() * 100)).append("%\n\n")
-              .append(f.detail() == null ? "" : f.detail()).append('\n');
-            if (i < sorted.size() - 1) sb.append("\n---\n");
-            sb.append('\n');
+                .collect(java.util.stream.Collectors.groupingBy(
+                        Finding::category,
+                        java.util.LinkedHashMap::new,
+                        java.util.stream.Collectors.toList()));
+
+        boolean firstCategory = true;
+        for (Map.Entry<String, List<Finding>> entry : byCategory.entrySet()) {
+            if (!firstCategory) sb.append("\n---\n\n");
+            firstCategory = false;
+
+            List<Finding> group = entry.getValue();
+            for (int i = 0; i < group.size(); i++) {
+                Finding f = group.get(i);
+                String emoji = SEV_EMOJI.getOrDefault(f.severity(), "•");
+                sb.append("### ").append(emoji).append(' ').append(f.title()).append('\n')
+                  .append("**Category:** `").append(f.category()).append("` · ")
+                  .append("**Severity:** ").append(f.severity().name()).append(" · ")
+                  .append("**Confidence:** ").append(Math.round(f.confidence() * 100)).append("%\n\n")
+                  .append(f.detail() == null ? "" : f.detail()).append('\n');
+                if (i < group.size() - 1) sb.append('\n');
+            }
         }
         return sb.toString();
     }
