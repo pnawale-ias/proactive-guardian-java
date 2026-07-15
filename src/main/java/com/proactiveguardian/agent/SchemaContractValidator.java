@@ -286,8 +286,7 @@ public class SchemaContractValidator {
 
             String title = table.isBlank()
                     ? "Schema contract violation in `" + artifact.name() + "`"
-                    : "Schema contract: `" + table + "." + field + "` — " +
-                      problem.substring(0, Math.min(60, problem.length()));
+                    : "Schema contract: `" + table + "." + field + "` — " + problem;
 
             findings.add(new Finding(
                     conf >= 0.85 ? Severity.BLOCK : Severity.WARN,
