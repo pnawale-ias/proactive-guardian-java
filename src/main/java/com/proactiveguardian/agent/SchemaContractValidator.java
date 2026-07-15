@@ -2,6 +2,7 @@ package com.proactiveguardian.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.proactiveguardian.knowledge.GraphStore;
 import com.proactiveguardian.knowledge.VectorStore;
 import com.proactiveguardian.knowledge.VectorStore.Hit;
 import com.proactiveguardian.model.Artifact;
@@ -22,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -47,16 +49,19 @@ public class SchemaContractValidator {
     private static final Logger log = LoggerFactory.getLogger(SchemaContractValidator.class);
 
     private final VectorStore vs;
+    private final GraphStore gs;
     private final ChatModel chatModel;
     private final ObjectMapper mapper;
     private final String promptTemplate;
 
     public SchemaContractValidator(VectorStore vs,
+                                   GraphStore gs,
                                    ChatModel chatModel,
                                    ObjectMapper mapper,
                                    @Value("classpath:prompts/schema_contract_validator.st") Resource promptResource)
             throws IOException {
         this.vs = vs;
+        this.gs = gs;
         this.chatModel = chatModel;
         this.mapper = mapper;
         this.promptTemplate = new String(promptResource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -76,11 +81,11 @@ public class SchemaContractValidator {
         String diffContent = after.content();
         if (diffContent == null || diffContent.isBlank()) return List.of();
 
-        // Step 1: find SQL_TABLE and SQL_COLUMN hits relevant to this diff.
-        // Use a type-filtered search so we only rank against schema artifacts,
-        // not Java code or Confluence pages that would otherwise dominate the top-k.
-        List<Hit> schemaHits = vs.searchSimilarByTypes(diffContent, 20, List.of("sql_table", "sql_column"));
-        Map<String, StringBuilder> tableSchemas = buildSchemaContext(schemaHits);
+        // Step 1: extract candidate table names from the code, then look them up
+        // deterministically in Neo4j (HAS_COLUMN edges). Fall back to Qdrant
+        // similarity only for tables not found in Neo4j.
+        Set<String> candidateTables = extractTableCandidates(diffContent);
+        Map<String, StringBuilder> tableSchemas = buildSchemaContext(diffContent, candidateTables);
         if (tableSchemas.isEmpty()) return List.of();
 
         // Step 2: render table→columns map as compact text for the prompt
@@ -114,45 +119,94 @@ public class SchemaContractValidator {
     // ------------------------------------------------------------------
 
     /**
-     * From raw Qdrant hits, build a table→"  - col_name (type)\n" map.
-     * SQL_TABLE hits provide table identity; SQL_COLUMN hits provide column rows.
-     * The metadata map is serialised as toString() in Qdrant so we reconstruct
-     * table_fqn from the `name` field ("schema.table" or "table.column" form).
+     * Extract candidate table/class names referenced in the code that could
+     * be DB table names: @Table(name="..."), @Column(name="...") annotations,
+     * SQL FROM/JOIN/INTO/UPDATE clauses, and uppercase identifiers.
      */
-    private Map<String, StringBuilder> buildSchemaContext(List<Hit> hits) {
+    private static final java.util.regex.Pattern TABLE_ANNOTATION_RE =
+            java.util.regex.Pattern.compile(
+                    "@(?:Table|Column)\\s*\\([^)]*name\\s*=\\s*[\"']([^\"']+)[\"']",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+    private static final java.util.regex.Pattern SQL_TABLE_RE =
+            java.util.regex.Pattern.compile(
+                    "\\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\\s+[`\"']?([A-Za-z_][\\w.]*)[`\"']?",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    private static Set<String> extractTableCandidates(String code) {
+        Set<String> candidates = new LinkedHashSet<>();
+        var m1 = TABLE_ANNOTATION_RE.matcher(code);
+        while (m1.find()) candidates.add(m1.group(1));
+        var m2 = SQL_TABLE_RE.matcher(code);
+        while (m2.find()) candidates.add(m2.group(1));
+        return candidates;
+    }
+
+    /**
+     * Build a table→columns map by:
+     *  1. For each candidate table name, query Neo4j's HAS_COLUMN edges (complete + deterministic).
+     *  2. For any table not resolved via Neo4j, fall back to Qdrant vector similarity.
+     *
+     * Tables resolved from Neo4j are marked [complete]; Qdrant-only tables are marked
+     * [partial — do not flag missing columns] so the LLM doesn't generate false positives.
+     */
+    private Map<String, StringBuilder> buildSchemaContext(String diffContent, Set<String> candidateTables) {
         Map<String, StringBuilder> tables = new LinkedHashMap<>();
+        Set<String> completeTables = new HashSet<>();
 
-        for (Hit hit : hits) {
-            Object typeObj = hit.payload().get("type");
-            if (typeObj == null) continue;
-            String type = typeObj.toString();
-
-            String name = hit.getStr("name");
-            String content = hit.getStr("content");
-
-            if ("sql_table".equals(type)) {
-                // name = table name (e.g. "orders"), content = "col1 type1, col2 type2, ..."
-                if (name == null) continue;
-                String fqn = resolveTableFqn(hit, name);
-                tables.computeIfAbsent(fqn, k -> new StringBuilder());
-                // Content already has a column summary; use it as fallback if no column hits
-                if (content != null && !content.isBlank()
-                        && tables.get(fqn).isEmpty()) {
-                    for (String col : content.split(",")) {
-                        tables.get(fqn).append("  - ").append(col.trim()).append("\n");
-                    }
-                }
-            } else if ("sql_column".equals(type)) {
-                // name = "table.column", content = data_type
-                if (name == null) continue;
-                // Reconstruct table name from the dot-separated name
-                String tablePart = resolveColumnTable(hit, name);
-                String colPart = resolveColumnName(hit, name);
-                String dataType = (content != null && !content.isBlank()) ? content : "unknown";
-                tables.computeIfAbsent(tablePart, k -> new StringBuilder());
-                tables.get(tablePart).append("  - ").append(colPart)
-                      .append(" (").append(dataType).append(")\n");
+        // Stage 1: deterministic Neo4j lookup per extracted candidate
+        for (String candidate : candidateTables) {
+            List<Map<String, Object>> cols = gs.columnsForTable(candidate);
+            if (cols.isEmpty()) continue;
+            String fqn = cols.get(0).getOrDefault("table_fqn", candidate).toString();
+            StringBuilder sb = tables.computeIfAbsent(fqn, k -> new StringBuilder());
+            for (Map<String, Object> col : cols) {
+                Object colName  = col.get("column");
+                Object dataType = col.get("data_type");
+                if (colName == null) continue;
+                sb.append("  - ").append(colName)
+                  .append(" (").append(dataType != null ? dataType : "unknown").append(")\n");
             }
+            completeTables.add(fqn);
+        }
+
+        // Stage 2: Qdrant fallback for tables not resolved via Neo4j (or when no candidates extracted)
+        if (tables.isEmpty()) {
+            List<Hit> hits = vs.searchSimilarByTypes(diffContent, 20, List.of("sql_table", "sql_column"));
+            for (Hit hit : hits) {
+                Object typeObj = hit.payload().get("type");
+                if (typeObj == null) continue;
+                String type = typeObj.toString();
+                String name = hit.getStr("name");
+                String content = hit.getStr("content");
+                if ("sql_table".equals(type)) {
+                    if (name == null) continue;
+                    String fqn = resolveTableFqn(hit, name);
+                    if (completeTables.contains(fqn)) continue;
+                    StringBuilder sb = tables.computeIfAbsent(fqn, k -> new StringBuilder());
+                    if (content != null && !content.isBlank() && sb.isEmpty()) {
+                        for (String col : content.split(",")) {
+                            sb.append("  - ").append(col.trim()).append("\n");
+                        }
+                        completeTables.add(fqn);
+                    }
+                } else if ("sql_column".equals(type)) {
+                    if (name == null) continue;
+                    String tablePart = resolveColumnTable(hit, name);
+                    if (completeTables.contains(tablePart)) continue;
+                    String colPart = resolveColumnName(hit, name);
+                    String dataType = (content != null && !content.isBlank()) ? content : "unknown";
+                    tables.computeIfAbsent(tablePart, k -> new StringBuilder())
+                          .append("  - ").append(colPart).append(" (").append(dataType).append(")\n");
+                }
+            }
+        }
+
+        // Annotate completeness for the LLM
+        for (Map.Entry<String, StringBuilder> e : tables.entrySet()) {
+            String label = completeTables.contains(e.getKey())
+                    ? " [complete]"
+                    : " [partial — do not flag missing columns]";
+            e.setValue(new StringBuilder(label + "\n").append(e.getValue()));
         }
         return tables;
     }
@@ -232,8 +286,7 @@ public class SchemaContractValidator {
 
             String title = table.isBlank()
                     ? "Schema contract violation in `" + artifact.name() + "`"
-                    : "Schema contract: `" + table + "." + field + "` — " +
-                      problem.substring(0, Math.min(60, problem.length()));
+                    : "Schema contract: `" + table + "." + field + "` — " + problem;
 
             findings.add(new Finding(
                     conf >= 0.85 ? Severity.BLOCK : Severity.WARN,

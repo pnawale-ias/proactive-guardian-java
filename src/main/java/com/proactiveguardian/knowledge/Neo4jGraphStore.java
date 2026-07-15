@@ -229,6 +229,26 @@ public class Neo4jGraphStore implements GraphStore {
     }
 
     @Override
+    public List<Map<String, Object>> columnsForTable(String tableNameOrFqn) {
+        // Try exact FQN match first, then unqualified table name match
+        List<Map<String, Object>> result = runList("""
+                MATCH (t:Artifact {type: 'sql_table'})
+                WHERE t.table_fqn = $fqn OR toLower(t.name) = toLower($fqn)
+                MATCH (t)-[:HAS_COLUMN]->(c:Artifact {type: 'sql_column'})
+                RETURN c.table_fqn AS table_fqn, c.column AS column, c.data_type AS data_type
+                ORDER BY c.name
+                """, Map.of("fqn", tableNameOrFqn));
+        if (!result.isEmpty()) return result;
+        // Also try case-insensitive FQN substring — handles schema prefix mismatches
+        return runList("""
+                MATCH (c:Artifact {type: 'sql_column'})
+                WHERE toLower(c.table_fqn) = toLower($fqn)
+                RETURN c.table_fqn AS table_fqn, c.column AS column, c.data_type AS data_type
+                ORDER BY c.column
+                """, Map.of("fqn", tableNameOrFqn));
+    }
+
+    @Override
     public List<Map<String, Object>> consumersOfColumn(String tableFqn, String column, int hops) {
         String cypher = ("""
                 MATCH (col:Artifact {table_fqn: $fqn, column: $col, type: 'sql_column'})

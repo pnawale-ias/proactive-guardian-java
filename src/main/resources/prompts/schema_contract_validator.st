@@ -10,10 +10,12 @@ Analyse for ALL of the following problems, regardless of ORM/framework (JPA, Hib
 - Renamed column where code still uses the old name
 
 IMPORTANT CALIBRATION:
-- The schema may be partially indexed. Do NOT flag a column as missing unless you are highly confident the schema snapshot is complete for that table.
+- The schema is retrieved via vector similarity search and is LIKELY INCOMPLETE — it contains only the most similar columns, not necessarily every column in the table.
+- Do NOT flag a column as missing unless the table schema is marked as "complete" (sourced from a full CREATE TABLE DDL). For partial schemas, assume any unrecognized column may simply be missing from the index — do not flag it.
 - If a table is not present in the provided schemas, skip it — we cannot validate what we haven't indexed.
 - Only report violations you can ground in the diff text. Do not speculate beyond what is shown.
 - Short, generic column names (id, name, created_at) appearing in WHERE clauses without table qualification should be treated as low-confidence.
+- When in doubt, prefer false-negative (miss a real violation) over false-positive (flag a valid column). A schema completeness warning is not a violation.
 
 Known table schemas (table → columns with types):
 {schemas}
