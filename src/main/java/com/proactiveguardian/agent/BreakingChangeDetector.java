@@ -275,21 +275,18 @@ public class BreakingChangeDetector {
             detail.append("\n\n### Downstream consumers\n");
             if (!missingByRepo.isEmpty()) {
                 detail.append("\n**🚫 Will break:**\n");
-                missingByRepo.forEach((r, locs) -> detail.append("- `").append(r).append("` — ")
-                        .append(String.join(", ", locs)).append('\n'));
+                missingByRepo.forEach((r, locs) -> appendRepoLine(detail, r, locs));
             }
             if (reqSignal != null && !setsByRepo.isEmpty()) {
                 detail.append("\n**✅ Safe** — already sets the field(s):\n");
-                setsByRepo.forEach((r, locs) -> detail.append("- `").append(r).append("` — ")
-                        .append(String.join(", ", locs)).append('\n'));
+                setsByRepo.forEach((r, locs) -> appendRepoLine(detail, r, locs));
             }
             if (!unclearByRepo.isEmpty()) {
                 String verdictLabel = verdict.hasSignal() && !verdict.breakers().isEmpty()
                         ? "**⚠️ May break:**"
                         : "**❓ Referenced by:**";
                 detail.append('\n').append(verdictLabel).append('\n');
-                unclearByRepo.forEach((r, locs) -> detail.append("- `").append(r).append("` — ")
-                        .append(String.join(", ", locs)).append('\n'));
+                unclearByRepo.forEach((r, locs) -> appendRepoLine(detail, r, locs));
             }
             if (verdict.hasSignal() && !verdict.breakers().isEmpty()
                     && verdict.summary() != null && !verdict.summary().isBlank()) {
@@ -376,6 +373,19 @@ public class BreakingChangeDetector {
         int idx = path.lastIndexOf("/src/");
         if (idx > 0) path = path.substring(idx + 1);
         return "`" + path + "`";
+    }
+
+    private static final int MAX_LOCS_PER_REPO = 3;
+
+    private static void appendRepoLine(StringBuilder sb, String repo, Set<String> locs) {
+        List<String> sorted = new ArrayList<>(locs);
+        int shown = Math.min(sorted.size(), MAX_LOCS_PER_REPO);
+        sb.append("- `").append(repo).append("` — ")
+          .append(String.join(", ", sorted.subList(0, shown)));
+        if (sorted.size() > shown) {
+            sb.append(" _(+").append(sorted.size() - shown).append(" more)_");
+        }
+        sb.append('\n');
     }
 
     /** Externally invoked when the after-version is {@code null}. */
