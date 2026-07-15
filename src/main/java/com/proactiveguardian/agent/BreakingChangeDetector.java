@@ -272,7 +272,7 @@ public class BreakingChangeDetector {
 
         // Single consolidated consumer section.
         if (!missingByRepo.isEmpty() || !setsByRepo.isEmpty() || !unclearByRepo.isEmpty()) {
-            detail.append("\n\n### 📡 Downstream consumers\n");
+            detail.append("\n\n### Downstream consumers\n");
             if (!missingByRepo.isEmpty()) {
                 detail.append("\n**🚫 Will break:**\n");
                 missingByRepo.forEach((r, locs) -> detail.append("- `").append(r).append("` — ")
@@ -291,7 +291,8 @@ public class BreakingChangeDetector {
                 unclearByRepo.forEach((r, locs) -> detail.append("- `").append(r).append("` — ")
                         .append(String.join(", ", locs)).append('\n'));
             }
-            if (verdict.hasSignal() && verdict.summary() != null && !verdict.summary().isBlank()) {
+            if (verdict.hasSignal() && !verdict.breakers().isEmpty()
+                    && verdict.summary() != null && !verdict.summary().isBlank()) {
                 detail.append("\n> ").append(verdict.summary().replace("\n", "\n> "));
             }
         } else if (analysis.hasFieldSignal()) {
