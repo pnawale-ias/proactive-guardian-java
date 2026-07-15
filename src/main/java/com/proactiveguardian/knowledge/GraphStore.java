@@ -45,5 +45,14 @@ public interface GraphStore {
     default List<Map<String, Object>> consumersOfColumn(String tableFqn, String column) {
         return consumersOfColumn(tableFqn, column, 2);
     }
+
+    /**
+     * Return all columns for a table matched by FQN (e.g. "firewall.EXT_ADVERTISER_MACRO_MAPPING")
+     * or by unqualified name. Each row has "table_fqn", "column", "data_type".
+     * Returns empty list if the table is not indexed or the store is unavailable.
+     */
+    default List<Map<String, Object>> columnsForTable(String tableNameOrFqn) {
+        return List.of();
+    }
 }
 
