@@ -66,7 +66,7 @@ public class GitIngester {
         try (Stream<Path> walker = Files.walk(localPath)) {
             walker.filter(Files::isRegularFile)
                   .filter(p -> !isSkipped(p))
-                  .forEach(p -> artifacts.addAll(codeParser.parseFile(p, repoName)));
+                  .forEach(p -> artifacts.addAll(codeParser.parseFile(p, repoName, localPath)));
         } catch (IOException e) {
             log.warn("Failed to walk {}: {}", localPath, e.getMessage());
         }
@@ -126,7 +126,7 @@ public class GitIngester {
                 String bPath = d.getNewPath();
                 if (bPath == null || DiffEntry.DEV_NULL.equals(bPath)) continue;
                 Path p = localPath.resolve(bPath);
-                if (Files.exists(p)) changed.addAll(codeParser.parseFile(p, repoName));
+                if (Files.exists(p)) changed.addAll(codeParser.parseFile(p, repoName, localPath));
             }
         } catch (Exception e) {
             log.warn("diffChangedArtifacts failed: {}", e.getMessage());
@@ -156,7 +156,7 @@ public class GitIngester {
 
                 if (d.getNewPath() != null && !DiffEntry.DEV_NULL.equals(d.getNewPath())) {
                     Path p = localPath.resolve(d.getNewPath());
-                    if (Files.exists(p)) afterArts = codeParser.parseFile(p, repoName);
+                    if (Files.exists(p)) afterArts = codeParser.parseFile(p, repoName, localPath);
                 }
                 if (d.getOldPath() != null && !DiffEntry.DEV_NULL.equals(d.getOldPath())) {
                     // Keep the base-blob for the lifetime of the PR temp dir so
@@ -164,7 +164,7 @@ public class GitIngester {
                     // the raw file, not just the JavaParser-normalised snippet.
                     Path tmp = extractBlobInto(repo, baseSha, d.getOldPath(), localPath);
                     if (tmp != null) {
-                        beforeArts = codeParser.parseFile(tmp, repoName);
+                        beforeArts = codeParser.parseFile(tmp, repoName, localPath);
                     }
                 }
 

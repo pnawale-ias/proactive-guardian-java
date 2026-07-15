@@ -28,5 +28,10 @@ public record Artifact(
     public static Artifact of(String id, ArtifactType type, String name, String content) {
         return new Artifact(id, type, name, content, null, null, null, null, Map.of(), Instant.now());
     }
+
+    /** Return a copy with a different path. */
+    public Artifact withPath(String newPath) {
+        return new Artifact(id, type, name, content, language, repo, newPath, url, metadata, updatedAt);
+    }
 }
 

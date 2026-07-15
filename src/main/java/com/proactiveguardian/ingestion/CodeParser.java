@@ -74,6 +74,27 @@ public class CodeParser {
         this.props = props;
     }
 
+    /**
+     * Parse a file and relativize artifact paths against {@code repoRoot} so
+     * stored paths are repo-relative (e.g. {@code service/src/main/java/...})
+     * rather than absolute temp-dir paths.
+     */
+    public List<Artifact> parseFile(Path path, String repo, Path repoRoot) {
+        List<Artifact> artifacts = parseFile(path, repo);
+        if (repoRoot == null) return artifacts;
+        return artifacts.stream()
+                .map(a -> {
+                    if (a.path() == null) return a;
+                    try {
+                        String rel = repoRoot.relativize(Path.of(a.path())).toString();
+                        return a.withPath(rel);
+                    } catch (IllegalArgumentException e) {
+                        return a; // path not under repoRoot — leave as-is
+                    }
+                })
+                .toList();
+    }
+
     public List<Artifact> parseFile(Path path, String repo) {
         String ext = extensionOf(path);
         String lang = LANG_MAP.get(ext);
