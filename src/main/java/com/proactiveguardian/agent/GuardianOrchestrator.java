@@ -27,19 +27,22 @@ public class GuardianOrchestrator {
     private final DependencyAnalyzer dependencies;
     private final ConstraintValidator constraints;
     private final YamlSyntaxValidator yamlSyntax;
+    private final SchemaContractValidator schemaContract;
 
     public GuardianOrchestrator(SchemaChangeDetector schemaChange,
                                 BreakingChangeDetector breakingChange,
                                 DuplicateDetector duplicates,
                                 DependencyAnalyzer dependencies,
                                 ConstraintValidator constraints,
-                                YamlSyntaxValidator yamlSyntax) {
+                                YamlSyntaxValidator yamlSyntax,
+                                SchemaContractValidator schemaContract) {
         this.schemaChange = schemaChange;
         this.breakingChange = breakingChange;
         this.duplicates = duplicates;
         this.dependencies = dependencies;
         this.constraints = constraints;
         this.yamlSyntax = yamlSyntax;
+        this.schemaContract = schemaContract;
     }
 
     // ---- Public entry points ----------------------------------------
@@ -52,12 +55,13 @@ public class GuardianOrchestrator {
         log.info("analyzing pair before={} after={}", describe(before), describe(after));
 
         GuardianState state = new GuardianState(before, after, List.of());
-        state = runNode("yaml-syntax",  this::yamlSyntaxNode,   state);
-        state = runNode("schema",       this::schemaNode,       state);
-        state = runNode("breaking",     this::breakingNode,     state);
-        state = runNode("duplicates",   this::duplicatesNode,   state);
-        state = runNode("dependencies", this::dependenciesNode, state);
-        state = runNode("constraints",  this::constraintsNode,  state);
+        state = runNode("yaml-syntax",       this::yamlSyntaxNode,       state);
+        state = runNode("schema",            this::schemaNode,           state);
+        state = runNode("breaking",          this::breakingNode,         state);
+        state = runNode("duplicates",        this::duplicatesNode,       state);
+        state = runNode("dependencies",      this::dependenciesNode,     state);
+        state = runNode("constraints",       this::constraintsNode,      state);
+        state = runNode("schema-contract",   this::schemaContractNode,   state);
 
         List<Finding> findings = state.findings();
         log.info("produced {} findings for after={} in {} ms",
@@ -118,6 +122,11 @@ public class GuardianOrchestrator {
     private GuardianState constraintsNode(GuardianState s) {
         if (s.after() == null) return s;
         return s.withMoreFindings(constraints.check(s.after()));
+    }
+
+    private GuardianState schemaContractNode(GuardianState s) {
+        if (s.after() == null) return s;
+        return s.withMoreFindings(schemaContract.check(s.before(), s.after()));
     }
 }
 

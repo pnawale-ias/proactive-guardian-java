@@ -43,6 +43,12 @@ public record GuardianProperties(
         String databricksDefaultCatalog,
         String defaultSqlDialect,
 
+        Boolean mysqlEnabled,
+        String mysqlUrl,
+        String mysqlUser,
+        String mysqlPassword,
+        String mysqlDatabase,
+
         double riskThreshold
 ) {
     public GuardianProperties {
@@ -54,6 +60,7 @@ public record GuardianProperties(
         if (neo4jUser == null || neo4jUser.isBlank()) neo4jUser = "neo4j";
         if (neo4jPass == null || neo4jPass.isBlank()) neo4jPass = "guardianpass";
         if (defaultSqlDialect == null || defaultSqlDialect.isBlank()) defaultSqlDialect = "databricks";
+        if (mysqlEnabled == null) mysqlEnabled = Boolean.FALSE;
         if (riskThreshold <= 0) riskThreshold = 0.75d;
 
         // If a repo URL is set but no name, derive the name from the last path segment.

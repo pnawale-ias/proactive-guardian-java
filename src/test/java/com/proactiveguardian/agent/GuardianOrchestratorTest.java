@@ -37,7 +37,8 @@ class GuardianOrchestratorTest {
                 new DuplicateDetector(vs, props(0.99)),
                 new DependencyAnalyzer(gs),
                 constraintValidator(vs),
-                new YamlSyntaxValidator()
+                new YamlSyntaxValidator(),
+                schemaContractValidator(vs)
         );
 
         Artifact before = new Artifact(
@@ -73,7 +74,8 @@ class GuardianOrchestratorTest {
                 new DuplicateDetector(vs, props(0.99)),
                 new DependencyAnalyzer(gs),
                 constraintValidator(vs),
-                new YamlSyntaxValidator()
+                new YamlSyntaxValidator(),
+                schemaContractValidator(vs)
         );
 
         Artifact fresh = new Artifact(
@@ -83,14 +85,32 @@ class GuardianOrchestratorTest {
         );
 
         List<Finding> findings = orch.analyzeChange(null, fresh);
-        assertThat(findings).noneMatch(f -> "breaking_change".equals(f.category()));
+        // A new symbol emits an INFO-level breaking_change advisory — that is expected.
+        // Assert no WARN or BLOCK severity breaking_change (i.e. no destructive impact).
+        assertThat(findings).noneMatch(f -> "breaking_change".equals(f.category())
+                && f.severity() != Severity.INFO);
     }
 
     private static GuardianProperties props(double riskThreshold) {
+        // openaiApiKey, embeddingModel, llmModel,
+        // qdrantUrl, qdrantCollection, qdrantApiKey,
+        // neo4jUri, neo4jUser, neo4jPass,
+        // githubToken, githubWebhookSecret, githubRepoUrl, githubRepoName, githubPollEnabled, githubPollIntervalMs,
+        // sqsEnabled, sqsQueueUrl, sqsRegion, sqsRoleArn, sqsRoleSessionName,
+        // confluenceBaseUrl, confluenceUser, confluenceToken,
+        // databricksHost, databricksToken, databricksDefaultCatalog, defaultSqlDialect,
+        // mysqlEnabled, mysqlUrl, mysqlUser, mysqlPassword, mysqlDatabase,
+        // riskThreshold
         return new GuardianProperties(
-                "k", null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, riskThreshold
+                "k", null, null,
+                null, null, null,
+                null, null, null,
+                null, null, null, null, null, null,
+                null, null, null, null, null,
+                null, null, null,
+                null, null, null, null,
+                null, null, null, null, null,
+                riskThreshold
         );
     }
 
@@ -100,6 +120,15 @@ class GuardianOrchestratorTest {
                 p -> new ChatResponse(List.of(new Generation(new AssistantMessage("{\"violations\":[]}")))),
                 new ObjectMapper(),
                 new ByteArrayResource("{code}\n{constraints}".getBytes())
+        );
+    }
+
+    private static SchemaContractValidator schemaContractValidator(VectorStore vs) throws Exception {
+        return new SchemaContractValidator(
+                vs,
+                p -> new ChatResponse(List.of(new Generation(new AssistantMessage("{\"violations\":[]}")))),
+                new ObjectMapper(),
+                new ByteArrayResource("{schemas}\n{code}".getBytes())
         );
     }
 }

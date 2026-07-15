@@ -301,7 +301,11 @@ public class SqlDiffService {
         for (String name : new TreeSet<>(retained)) {
             ColumnSpec b = before.get(name);
             ColumnSpec a = after.get(name);
-            if (!normalizeType(b.type()).equals(normalizeType(a.type()))) {
+            // Emit when base type differs OR when base types match but the full
+            // type string differs (e.g. VARCHAR(200) vs VARCHAR(50) — same base,
+            // different size).
+            if (!normalizeType(b.type()).equals(normalizeType(a.type()))
+                    || !b.type().equalsIgnoreCase(a.type())) {
                 delta.typeChanges().add(new ColumnChange(
                         fqn, name, b.type(), a.type(), null, null,
                         isNarrowing(b.type(), a.type())

@@ -3,6 +3,7 @@ package com.proactiveguardian.web;
 import com.proactiveguardian.config.GuardianProperties;
 import com.proactiveguardian.ingestion.ConfluenceIngester;
 import com.proactiveguardian.ingestion.GitIngester;
+import com.proactiveguardian.ingestion.MysqlSchemaIngester;
 import com.proactiveguardian.model.Artifact;
 import com.proactiveguardian.notifier.ConfluenceClient;
 import org.slf4j.Logger;
@@ -31,17 +32,20 @@ public class IngestController {
     private final GitIngester gitIngester;
     private final ObjectProvider<ConfluenceIngester> confluence;
     private final ObjectProvider<ConfluenceClient> confluenceClient;
+    private final ObjectProvider<MysqlSchemaIngester> mysql;
     private final GuardianProperties props;
     private final IngestedRepoBanner banner;
 
     public IngestController(GitIngester gitIngester,
                             ObjectProvider<ConfluenceIngester> confluence,
                             ObjectProvider<ConfluenceClient> confluenceClient,
+                            ObjectProvider<MysqlSchemaIngester> mysql,
                             GuardianProperties props,
                             IngestedRepoBanner banner) {
         this.gitIngester = gitIngester;
         this.confluence = confluence;
         this.confluenceClient = confluenceClient;
+        this.mysql = mysql;
         this.props = props;
         this.banner = banner;
     }
@@ -177,6 +181,26 @@ public class IngestController {
         out.put("id", id);
         out.put("url", url);
         return out;
+    }
+
+    @PostMapping("/mysql")
+    public Map<String, Object> mysql() {
+        MysqlSchemaIngester mi = mysql.getIfAvailable();
+        if (mi == null) {
+            return Map.of("ok", false,
+                    "reason", "mysql disabled — set MYSQL_ENABLED=true + MYSQL_URL/USER/PASSWORD/DATABASE");
+        }
+        try {
+            int count = mi.ingestSchema();
+            return Map.of("ok", true, "artifacts_ingested", count);
+        } catch (Exception ex) {
+            log.warn("MySQL schema ingest failed: {}", ex.toString());
+            Map<String, Object> err = new LinkedHashMap<>();
+            err.put("ok", false);
+            err.put("error", ex.getClass().getSimpleName());
+            err.put("message", String.valueOf(ex.getMessage()));
+            return err;
+        }
     }
 
     private static String escape(String s) {

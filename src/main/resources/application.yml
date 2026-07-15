@@ -30,7 +30,7 @@ guardian:
   github-webhook-secret: ${GITHUB_WEBHOOK_SECRET:}
   # Default repo used by POST /ingest/repo when repo_url / repo_name are omitted.
   # Override at runtime with GITHUB_REPO_URL / GITHUB_REPO_NAME env vars.
-  github-repo-url:  ${GITHUB_REPO_URL:https://github.com/kshetty-ias/macro-mapping-manager-service}
+  github-repo-url:  ${GITHUB_REPO_URL:https://github.com/hsutar-ias/macro-mapping-manager-service}
   github-repo-name: ${GITHUB_REPO_NAME:macro-mapping-manager-service}
   # ---- GitHub PR polling (no webhook / no public URL needed) ------------
   # Set GITHUB_POLL_ENABLED=true to have the app poll api.github.com for
@@ -58,6 +58,15 @@ guardian:
   databricks-token: ${DATABRICKS_TOKEN:}
   databricks-default-catalog: ${DATABRICKS_DEFAULT_CATALOG:}
   default-sql-dialect: ${DEFAULT_SQL_DIALECT:databricks}
+
+  # ---- MySQL live schema ingestion (optional) ----------------------------
+  # Set MYSQL_ENABLED=true and supply the four MYSQL_* vars to enable.
+  # MYSQL_DATABASE scopes all INFORMATION_SCHEMA queries to one schema.
+  mysql-enabled:  ${MYSQL_ENABLED:false}
+  mysql-url:      ${MYSQL_URL:}
+  mysql-user:     ${MYSQL_USER:}
+  mysql-password: ${MYSQL_PASSWORD:}
+  mysql-database: ${MYSQL_DATABASE:}
 
   # ---- Analysis knobs ---------------------------------------------------
   risk-threshold: 0.75
@@ -126,6 +135,9 @@ logging:
     # a property/label the database has never seen. Neo4jGraphStore pre-registers
     # the keys we use, but silence the logger anyway to keep cold-start logs clean.
     org.springframework.data.neo4j.cypher.unrecognized: ERROR
+    # Silence CartesianProduct notifications — both MATCH patterns in Neo4jGraphStore
+    # now use two separate MATCH clauses, but the notification logger fires regardless.
+    org.springframework.data.neo4j.cypher.performance: WARN
     # The Qdrant Java client logs a full stack trace at ERROR for every failed
     # operation (e.g. when Qdrant isn't running locally). We already handle
     # unavailability with a circuit-breaker in QdrantVectorStore, so silence

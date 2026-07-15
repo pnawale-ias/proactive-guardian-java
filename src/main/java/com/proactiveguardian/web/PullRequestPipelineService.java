@@ -3,6 +3,7 @@ package com.proactiveguardian.web;
 import com.proactiveguardian.agent.ConfluenceDocAdvisor;
 import com.proactiveguardian.agent.ConsumerAwarenessAdvisor;
 import com.proactiveguardian.agent.GuardianOrchestrator;
+import com.proactiveguardian.agent.SqlReferenceAdvisor;
 import com.proactiveguardian.config.GuardianProperties;
 import com.proactiveguardian.ingestion.GitIngester;
 import com.proactiveguardian.model.Finding;
@@ -37,6 +38,7 @@ public class PullRequestPipelineService {
     private final GuardianOrchestrator orchestrator;
     private final ConsumerAwarenessAdvisor consumerAwareness;
     private final ConfluenceDocAdvisor confluenceDocAdvisor;
+    private final SqlReferenceAdvisor sqlReferenceAdvisor;
     private final ObjectProvider<GitHubNotifier> notifier;
 
     public PullRequestPipelineService(GuardianProperties props,
@@ -44,12 +46,14 @@ public class PullRequestPipelineService {
                                       GuardianOrchestrator orchestrator,
                                       ConsumerAwarenessAdvisor consumerAwareness,
                                       ConfluenceDocAdvisor confluenceDocAdvisor,
+                                      SqlReferenceAdvisor sqlReferenceAdvisor,
                                       ObjectProvider<GitHubNotifier> notifier) {
         this.props = props;
         this.gitIngester = gitIngester;
         this.orchestrator = orchestrator;
         this.consumerAwareness = consumerAwareness;
         this.confluenceDocAdvisor = confluenceDocAdvisor;
+        this.sqlReferenceAdvisor = sqlReferenceAdvisor;
         this.notifier = notifier;
     }
 
@@ -130,6 +134,13 @@ public class PullRequestPipelineService {
                 allFindings.addAll(confluenceDocAdvisor.advise(pairs));
             } catch (Exception ce) {
                 log.debug("confluence-doc advisory skipped: {}", ce.toString());
+            }
+
+            // Surface FK-dependency blast radius for any code files that reference MySQL tables.
+            try {
+                allFindings.addAll(sqlReferenceAdvisor.advise(repoName, pairs));
+            } catch (Exception ce) {
+                log.debug("sql-reference advisory skipped: {}", ce.toString());
             }
             // Same file can appear in multiple diff pairs (e.g. rename +
             // modify) and several agents can emit near-identical advisories.

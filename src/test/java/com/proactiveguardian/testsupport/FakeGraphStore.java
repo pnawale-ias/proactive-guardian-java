@@ -118,7 +118,7 @@ public class FakeGraphStore implements GraphStore {
         for (Artifact a : nodes.values()) if (tableFqn.equalsIgnoreCase(fqnOf(a))) targetIds.add(a.id());
         for (Edge e : edges) {
             if (targetIds.contains(e.dst) &&
-                    Set.of("READS_TABLE", "WRITES_TABLE", "MAPPED_TO_TABLE", "DBT_REFS", "VIEW_OF")
+                    Set.of("READS_TABLE", "WRITES_TABLE", "MAPPED_TO_TABLE", "DBT_REFS", "VIEW_OF", "REFERENCES")
                             .contains(e.rel)) {
                 Artifact consumer = nodes.get(e.src);
                 if (consumer != null) out.add(toRow(consumer, 1));

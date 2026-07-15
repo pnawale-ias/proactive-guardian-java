@@ -172,6 +172,58 @@ public class QdrantVectorStore implements VectorStore, AutoCloseable {
     }
 
     @Override
+    public List<Hit> searchSimilarByTypes(String text, int k, List<String> types) {
+        long now = System.currentTimeMillis();
+        if (now < unavailableUntilMs) return List.of();
+        float[] vec = embeddings.embedOne(text);
+        List<Float> vecList = new ArrayList<>(vec.length);
+        for (float f : vec) vecList.add(f);
+
+        // Build a Qdrant "should" filter — match any of the given type values
+        var matchConditions = types.stream()
+                .map(t -> io.qdrant.client.grpc.Points.Condition.newBuilder()
+                        .setField(io.qdrant.client.grpc.Points.FieldCondition.newBuilder()
+                                .setKey("type")
+                                .setMatch(io.qdrant.client.grpc.Points.Match.newBuilder()
+                                        .setKeyword(t).build())
+                                .build())
+                        .build())
+                .toList();
+        var filter = io.qdrant.client.grpc.Points.Filter.newBuilder()
+                .addAllShould(matchConditions)
+                .build();
+
+        try {
+            List<ScoredPoint> results = client.searchAsync(
+                    io.qdrant.client.grpc.Points.SearchPoints.newBuilder()
+                            .setCollectionName(props.qdrantCollection())
+                            .addAllVector(vecList)
+                            .setLimit(k)
+                            .setFilter(filter)
+                            .setWithPayload(io.qdrant.client.grpc.Points.WithPayloadSelector
+                                    .newBuilder().setEnable(true).build())
+                            .build()
+            ).get();
+
+            return results.stream()
+                    .map(r -> new Hit(r.getScore(), fromPayload(r.getPayloadMap())))
+                    .toList();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return List.of();
+        } catch (ExecutionException e) {
+            if (isConnectionError(e)) {
+                unavailableUntilMs = System.currentTimeMillis() + UNAVAILABLE_BACKOFF_MS;
+                log.warn("Qdrant unavailable ({}); short-circuiting similarity searches for {}s",
+                        rootMessage(e), UNAVAILABLE_BACKOFF_MS / 1000);
+            } else {
+                log.warn("Qdrant typed search failed: {}", rootMessage(e));
+            }
+            return List.of();
+        }
+    }
+
+    @Override
     public List<Hit> searchSimilar(String text, int k, String excludeId) {
         long now = System.currentTimeMillis();
         if (now < unavailableUntilMs) {

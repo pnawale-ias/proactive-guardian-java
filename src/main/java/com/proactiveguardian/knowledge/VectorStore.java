@@ -27,6 +27,24 @@ public interface VectorStore {
     }
 
     /**
+     * Like {@link #searchSimilar} but restricted to artifacts whose {@code type}
+     * payload matches one of {@code types}. Default implementation fetches a
+     * larger result set and post-filters; implementations may override with a
+     * native store filter for efficiency.
+     */
+    default List<Hit> searchSimilarByTypes(String text, int k, List<String> types) {
+        List<Hit> all = searchSimilar(text, k * 10);
+        java.util.Set<String> typeSet = new java.util.HashSet<>(types);
+        return all.stream()
+                .filter(h -> {
+                    Object t = h.payload().get("type");
+                    return t != null && typeSet.contains(t.toString());
+                })
+                .limit(k)
+                .toList();
+    }
+
+    /**
      * Distinct {@code repo} payload values present in the store, mapped to the
      * number of artifacts each repo contributes. Used at startup to print an
      * "ingested services" summary. Default is empty (fakes / non-Qdrant stores).
