@@ -43,6 +43,7 @@ public class SqsGithubConsumer {
         this.props = props;
         this.sqsClient = sqsClient;
         this.pipeline = pipeline;
+        log.info("SQS consumer started — polling queue={}", props.sqsQueueUrl());
     }
 
     @Scheduled(fixedDelay = 100)
