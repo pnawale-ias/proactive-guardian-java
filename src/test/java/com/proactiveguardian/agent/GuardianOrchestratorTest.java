@@ -126,6 +126,7 @@ class GuardianOrchestratorTest {
     private static SchemaContractValidator schemaContractValidator(VectorStore vs) throws Exception {
         return new SchemaContractValidator(
                 vs,
+                new FakeGraphStore(),
                 p -> new ChatResponse(List.of(new Generation(new AssistantMessage("{\"violations\":[]}")))),
                 new ObjectMapper(),
                 new ByteArrayResource("{schemas}\n{code}".getBytes())
