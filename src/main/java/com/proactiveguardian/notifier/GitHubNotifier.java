@@ -137,6 +137,7 @@ public class GitHubNotifier {
             String emoji = SEV_EMOJI.getOrDefault(f.severity(), "•");
             sb.append("### ").append(emoji).append(' ').append(f.title()).append('\n')
               .append("**Category:** `").append(f.category()).append("` · ")
+              .append("**Severity:** ").append(f.severity().name()).append(" · ")
               .append("**Confidence:** ").append(Math.round(f.confidence() * 100)).append("%\n\n")
               .append(f.detail() == null ? "" : f.detail()).append('\n');
             if (i < sorted.size() - 1) sb.append("\n---\n");
