@@ -172,6 +172,66 @@ public class QdrantVectorStore implements VectorStore, AutoCloseable {
     }
 
     @Override
+    public List<Hit> searchSimilarExcludingRepo(String text, int k, String excludeRepo) {
+        if (excludeRepo == null || excludeRepo.isBlank()) return searchSimilar(text, k);
+        long now = System.currentTimeMillis();
+        if (now < unavailableUntilMs) return List.of();
+        float[] vec = embeddings.embedOne(text);
+        List<Float> vecList = new ArrayList<>(vec.length);
+        for (float f : vec) vecList.add(f);
+
+        // Exclude both the full name (org/repo) and the short name (repo)
+        // since artifacts may be stored with either form.
+        String shortName = excludeRepo.contains("/")
+                ? excludeRepo.substring(excludeRepo.lastIndexOf('/') + 1) : excludeRepo;
+        List<String> excludeValues = shortName.equals(excludeRepo)
+                ? List.of(excludeRepo)
+                : List.of(excludeRepo, shortName);
+
+        var mustNot = excludeValues.stream()
+                .map(v -> io.qdrant.client.grpc.Points.Condition.newBuilder()
+                        .setField(io.qdrant.client.grpc.Points.FieldCondition.newBuilder()
+                                .setKey("repo")
+                                .setMatch(io.qdrant.client.grpc.Points.Match.newBuilder()
+                                        .setKeyword(v).build())
+                                .build())
+                        .build())
+                .toList();
+        var filter = io.qdrant.client.grpc.Points.Filter.newBuilder()
+                .addAllMustNot(mustNot)
+                .build();
+
+        try {
+            List<ScoredPoint> results = client.searchAsync(
+                    io.qdrant.client.grpc.Points.SearchPoints.newBuilder()
+                            .setCollectionName(props.qdrantCollection())
+                            .addAllVector(vecList)
+                            .setLimit(k)
+                            .setFilter(filter)
+                            .setWithPayload(io.qdrant.client.grpc.Points.WithPayloadSelector
+                                    .newBuilder().setEnable(true).build())
+                            .build()
+            ).get();
+
+            return results.stream()
+                    .map(r -> new Hit(r.getScore(), fromPayload(r.getPayloadMap())))
+                    .toList();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return List.of();
+        } catch (ExecutionException e) {
+            if (isConnectionError(e)) {
+                unavailableUntilMs = System.currentTimeMillis() + UNAVAILABLE_BACKOFF_MS;
+                log.warn("Qdrant unavailable ({}); short-circuiting similarity searches for {}s",
+                        rootMessage(e), UNAVAILABLE_BACKOFF_MS / 1000);
+            } else {
+                log.warn("Qdrant repo-excluded search failed: {}", rootMessage(e));
+            }
+            return List.of();
+        }
+    }
+
+    @Override
     public List<Hit> searchSimilarByTypes(String text, int k, List<String> types) {
         long now = System.currentTimeMillis();
         if (now < unavailableUntilMs) return List.of();
