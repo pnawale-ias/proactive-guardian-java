@@ -20,9 +20,11 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Validates code changes against the ingested MySQL schema knowledge base.
@@ -74,8 +76,10 @@ public class SchemaContractValidator {
         String diffContent = after.content();
         if (diffContent == null || diffContent.isBlank()) return List.of();
 
-        // Step 1: find SQL_TABLE and SQL_COLUMN hits relevant to this diff
-        List<Hit> schemaHits = vs.searchSimilar(diffContent, 20);
+        // Step 1: find SQL_TABLE and SQL_COLUMN hits relevant to this diff.
+        // Use a type-filtered search so we only rank against schema artifacts,
+        // not Java code or Confluence pages that would otherwise dominate the top-k.
+        List<Hit> schemaHits = vs.searchSimilarByTypes(diffContent, 20, List.of("sql_table", "sql_column"));
         Map<String, StringBuilder> tableSchemas = buildSchemaContext(schemaHits);
         if (tableSchemas.isEmpty()) return List.of();
 
@@ -215,6 +219,7 @@ public class SchemaContractValidator {
         if (!violations.isArray()) return List.of();
 
         List<Finding> findings = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
         for (JsonNode v : violations) {
             double conf = v.path("confidence").asDouble(0);
             if (conf < 0.6) continue;
@@ -223,6 +228,7 @@ public class SchemaContractValidator {
             String field   = v.path("field").asText("");
             String problem = v.path("problem").asText("");
             if (problem.isBlank()) continue;
+            if (!seen.add(table + "::" + field + "::" + problem)) continue;
 
             String title = table.isBlank()
                     ? "Schema contract violation in `" + artifact.name() + "`"
